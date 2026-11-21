@@ -13,7 +13,7 @@ export const PREP_NOTE = "備料總量＝該時段有效訂單菜量";
  * Counts every non-deleted order on the slot, picked up or not, because prep
  * follows what was ordered. Soft-deleted orders and addons are left out.
  * Set dishes are read from live set_dishes, so a menu edit recalculates totals.
- * Addons add one portion of their dish name on top of the set.
+ * Addons add their quantity of that dish on top of the set.
  */
 export async function dishTotalsForSlot(date: string, slotId: string): Promise<DishTotal[]> {
   const setRows = await sql<{ dish_name: string; qty: number | string }>(
@@ -29,7 +29,7 @@ export async function dishTotalsForSlot(date: string, slotId: string): Promise<D
     [slotId, date],
   );
   const addonRows = await sql<{ dish_name: string; qty: number | string }>(
-    `select d.name as dish_name, count(*) as qty
+    `select d.name as dish_name, coalesce(sum(a.quantity), 0) as qty
      from addons a
      join dishes d on d.id = a.dish_id
      join order_items oi on oi.id = a.parent_order_item_id

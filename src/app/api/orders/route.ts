@@ -1,3 +1,4 @@
+import { linePrice, unitPriceForDish } from "@/lib/alacarte";
 import { writeAudit } from "@/lib/audit";
 import { requireRole, requireUser, type User } from "@/lib/auth";
 import { sql, withTransaction, type SqlFn } from "@/lib/db";
@@ -27,7 +28,10 @@ type Body = {
   parent_order_item_id?: unknown;
   dish_id?: unknown;
   note?: unknown;
+  alacarte?: unknown;
 };
+
+type AlacarteLine = { dish_id: string; quantity: number };
 
 function isResponse(value: unknown): value is Response {
   return value instanceof Response;
@@ -72,6 +76,60 @@ function asServiceType(value: unknown): "takeout" | "dine_in" | undefined {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseAlacarte(value: unknown): AlacarteLine[] | Response {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return Response.json({ error: "單點格式不正確" }, { status: 400 });
+  const merged = new Map<string, number>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") return Response.json({ error: "單點格式不正確" }, { status: 400 });
+    const record = item as { dish_id?: unknown; quantity?: unknown };
+    const dishId = asString(record.dish_id);
+    if (!dishId || !UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    let quantity = 1;
+    if (record.quantity !== undefined && record.quantity !== null && record.quantity !== "") {
+      const parsed = asInt(record.quantity);
+      if (parsed === undefined || parsed < 1) {
+        return Response.json({ error: "數量須為正整數" }, { status: 400 });
+      }
+      quantity = parsed;
+    }
+    merged.set(dishId, (merged.get(dishId) ?? 0) + quantity);
+  }
+  return [...merged.entries()].map(([dish_id, quantity]) => ({ dish_id, quantity }));
+}
+
+async function prepareAlacarte(
+  query: SqlFn,
+  lines: AlacarteLine[],
+): Promise<{ dish_id: string; quantity: number; price: number; amount_paid: number }[] | Response> {
+  if (lines.length === 0) return [];
+  const setRows = await query<{ id: string; price: number | string; dish_id: string | null }>(
+    `select ms.id, ms.price, sd.dish_id
+     from menu_sets ms
+     left join set_dishes sd on sd.menu_set_id = ms.id`,
+  );
+  const grouped = new Map<string, { price: number; dishIds: string[] }>();
+  for (const row of setRows) {
+    const set = grouped.get(row.id) ?? { price: Number(row.price), dishIds: [] };
+    if (row.dish_id) set.dishIds.push(row.dish_id);
+    grouped.set(row.id, set);
+  }
+  const sets = [...grouped.values()];
+  const prepared: { dish_id: string; quantity: number; price: number; amount_paid: number }[] = [];
+  for (const line of lines) {
+    const found = await query<{ id: string }>("select id from dishes where id = $1", [line.dish_id]);
+    if (!found[0]) return Response.json({ error: "找不到菜色" }, { status: 400 });
+    const price = linePrice(unitPriceForDish(line.dish_id, sets), line.quantity);
+    prepared.push({
+      dish_id: line.dish_id,
+      quantity: line.quantity,
+      price,
+      amount_paid: defaultAmountPaid(price),
+    });
+  }
+  return prepared;
+}
 
 function explicitAmount(value: unknown): number | undefined | Response {
   if (value === undefined || value === null || value === "") return undefined;
@@ -236,6 +294,8 @@ export async function POST(request: Request): Promise<Response> {
   const parsedNote = asNote(body.note);
   if (parsedNote instanceof Response) return parsedNote;
   const note = parsedNote ?? "";
+  const alacarte = parseAlacarte(body.alacarte);
+  if (alacarte instanceof Response) return alacarte;
   const requestedPaid = explicitAmount(body.amount_paid);
   if (isResponse(requestedPaid)) return requestedPaid;
 
@@ -251,6 +311,8 @@ export async function POST(request: Request): Promise<Response> {
       }
       const price = await resolvePrice(body.price, menuSetId, query);
       if (isResponse(price)) return price;
+      const portions = await prepareAlacarte(query, alacarte);
+      if (portions instanceof Response) return portions;
       const amountPaid = requestedPaid ?? defaultAmountPaid(price);
       const rows = await query<OrderRow>(
         `insert into order_items
@@ -259,6 +321,13 @@ export async function POST(request: Request): Promise<Response> {
          returning id`,
         [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid, note],
       );
+      for (const portion of portions) {
+        await query(
+          `insert into addons (parent_order_item_id, dish_id, price, amount_paid, quantity)
+           values ($1, $2, $3, $4, $5)`,
+          [rows[0].id, portion.dish_id, portion.price, portion.amount_paid, portion.quantity],
+        );
+      }
       const full = await query<OrderRow>(`${ORDER_SELECT} where oi.id = $1`, [rows[0].id]);
       const after = (await attachAddons(query, [serializeOrder(full[0])]))[0];
       await writeAudit(

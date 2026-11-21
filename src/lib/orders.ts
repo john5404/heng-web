@@ -36,6 +36,7 @@ export type AddonRow = {
   price: number | string;
   amount_paid: number | string;
   picked_up: boolean;
+  quantity: number | string;
 };
 
 export type AddonJson = {
@@ -48,6 +49,7 @@ export type AddonJson = {
   remaining: number;
   paid_in_full: boolean;
   picked_up: boolean;
+  quantity: number;
 };
 
 export type OrderJson = {
@@ -83,7 +85,7 @@ join day_slots ds on ds.id = oi.slot_id
 left join menu_sets ms on ms.id = oi.menu_set_id`;
 
 export const ADDON_SELECT = `select a.id, a.parent_order_item_id, a.dish_id, d.name as dish_name,
-  a.price, a.amount_paid, a.picked_up
+  a.price, a.amount_paid, a.picked_up, a.quantity
 from addons a
 join dishes d on d.id = a.dish_id`;
 
@@ -100,6 +102,7 @@ export function serializeAddon(row: AddonRow): AddonJson {
     remaining: remainingAmount(price, amountPaid),
     paid_in_full: isPaidInFull(price, amountPaid),
     picked_up: Boolean(row.picked_up),
+    quantity: Number(row.quantity ?? 1) || 1,
   };
 }
 

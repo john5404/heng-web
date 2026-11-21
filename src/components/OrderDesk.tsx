@@ -2,12 +2,14 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
+import { alacarteMenu, addonLineText } from "@/lib/alacarte";
 import { phonePopupOn } from "@/lib/phone";
 
 type AddonItem = {
   id: string;
   parent_order_item_id: string;
   dish_name: string;
+  quantity: number;
   price: number;
   amount_paid: number;
   remaining: number;
@@ -36,7 +38,9 @@ type OrderItem = {
 
 type Role = "admin" | "pickup" | "viewer";
 
-type MenuSet = { id: string; name: string; price: number };
+type MenuDish = { id: string; name: string; sort_order: number };
+type MenuSet = { id: string; name: string; price: number; dishes: MenuDish[] };
+type CatalogDish = { id: string; name: string };
 type Slot = {
   id: string;
   service_date: string;
@@ -53,6 +57,8 @@ export default function OrderDesk() {
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [paidDrafts, setPaidDrafts] = useState<Record<string, string>>({});
   const [sets, setSets] = useState<MenuSet[]>([]);
+  const [catalog, setCatalog] = useState<CatalogDish[]>([]);
+  const [qtyByDish, setQtyByDish] = useState<Record<string, number>>({});
   const [slots, setSlots] = useState<Slot[]>([]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -81,8 +87,9 @@ export default function OrderDesk() {
         return;
       }
       if (menuRes.ok) {
-        const data = (await menuRes.json()) as { sets: MenuSet[] };
+        const data = (await menuRes.json()) as { sets: MenuSet[]; dishes: CatalogDish[] };
         setSets(data.sets);
+        setCatalog(data.dishes);
       }
       if (slotRes.ok) {
         const data = (await slotRes.json()) as { slots: Slot[] };
@@ -180,12 +187,31 @@ export default function OrderDesk() {
       slot_id: form.slot_id,
       note: form.note,
       ...(price === undefined ? {} : { price }),
+      ...(chosenAlacarte.length > 0 ? { alacarte: chosenAlacarte } : {}),
     });
     if (!ok) return;
     const name = form.customer_name.trim();
     setQuery(name);
     setForm((prev) => ({ ...prev, customer_name: "", phone: "", price: "", note: "" }));
+    setQtyByDish({});
     await search(name);
+  }
+
+  const singleDishes = alacarteMenu(catalog, sets);
+  const chosenAlacarte = singleDishes
+    .filter((dish) => (qtyByDish[dish.id] ?? 0) >= 1)
+    .map((dish) => ({ dish_id: dish.id, quantity: qtyByDish[dish.id] }));
+
+  function setDishQty(dishId: string, raw: number) {
+    const quantity = Number.isFinite(raw) ? Math.max(0, Math.trunc(raw)) : 0;
+    setQtyByDish((prev) => {
+      if (quantity < 1) {
+        const next = { ...prev };
+        delete next[dishId];
+        return next;
+      }
+      return { ...prev, [dishId]: quantity };
+    });
   }
 
   const canManage = role === "admin";
@@ -242,7 +268,7 @@ export default function OrderDesk() {
       <section style={styles.card}>
         <h2 style={styles.h2}>新增項目</h2>
         <p style={styles.note}>
-          已收預設 2000；售價低於 2000 則預設收滿。魚翅羹可單點，或加在既有項目上，訂金與領取各自計算。
+          已收預設 2000；售價低於 2000 則預設收滿。魚翅羹可單點，或加在既有項目上，訂金與領取各自計算。單點選了之後數量是 1，沒有單價的菜這一列售價是 0。
         </p>
         <form
           onSubmit={onCreate}
@@ -322,6 +348,46 @@ export default function OrderDesk() {
               ))}
             </select>
           </label>
+          <div style={styles.alacarte}>
+            <h3 style={styles.h2}>單點</h3>
+            {singleDishes.map((dish) => {
+              const quantity = qtyByDish[dish.id] ?? 0;
+              return (
+                <div key={dish.id} style={styles.alacarteRow}>
+                  <span style={styles.alacarteName}>{dish.name}</span>
+                  <span>單價 {dish.unitPrice}</span>
+                  <button
+                    type="button"
+                    style={styles.button}
+                    aria-label={`${dish.name} 減少`}
+                    onClick={() => setDishQty(dish.id, quantity - 1)}
+                  >
+                    −
+                  </button>
+                  <input
+                    aria-label={`${dish.name} 數量`}
+                    inputMode="numeric"
+                    value={quantity === 0 ? "" : String(quantity)}
+                    placeholder="0"
+                    onChange={(e) => {
+                      const text = e.target.value.trim();
+                      setDishQty(dish.id, text === "" ? 0 : Number(text));
+                    }}
+                    style={styles.qty}
+                  />
+                  <button
+                    type="button"
+                    style={styles.button}
+                    aria-label={`${dish.name} 增加`}
+                    onClick={() => setDishQty(dish.id, quantity < 1 ? 1 : quantity + 1)}
+                  >
+                    ＋
+                  </button>
+                  {quantity >= 1 ? <span>這一列售價 {dish.unitPrice * quantity}</span> : null}
+                </div>
+              );
+            })}
+          </div>
           <label style={styles.field}>
             售價
             <input
@@ -436,7 +502,7 @@ export default function OrderDesk() {
           </div>
           {(order.addons ?? []).map((addon) => (
             <div key={addon.id} style={styles.addon}>
-              <h3 style={styles.h2}>加購 {addon.dish_name}</h3>
+              <h3 style={styles.h2}>{addonLineText(addon)}</h3>
               <p style={styles.money}>
                 售價 {addon.price} · 已收{" "}
                 {canManage ? (
@@ -542,6 +608,10 @@ const styles: Record<string, CSSProperties> = {
   select: { minHeight: 56, fontSize: 20 },
   button: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
   submitWrap: { display: "inline-flex" },
+  alacarte: { flex: "1 1 100%", display: "flex", flexDirection: "column", gap: 8 },
+  alacarteRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  alacarteName: { flex: "1 1 180px", fontWeight: 700 },
+  qty: { width: 88, minHeight: 56, fontSize: 22, padding: "0 8px" },
   picked: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px", background: "#146c43", color: "#fff" },
   danger: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
   meta: { display: "flex", gap: 12, alignItems: "center", margin: "6px 0", flexWrap: "wrap" },

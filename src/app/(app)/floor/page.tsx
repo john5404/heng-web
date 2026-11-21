@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { addonLineText } from "@/lib/alacarte";
 import { ordersMatchingTier, priceTierCounts } from "@/lib/orders";
 
 type AddonItem = {
+  id: string;
   dish_name: string;
+  quantity: number;
+  price: number;
   picked_up: boolean;
 };
 
@@ -250,9 +254,11 @@ export default function FloorPage() {
               {order.picked_up ? "已領取" : "領取"}
             </button>
           ) : null}
-          {(order.addons ?? []).length > 0 ? (
-            <p style={styles.note}>加購 {(order.addons ?? []).map((addon) => addon.dish_name).join("、")}</p>
-          ) : null}
+          {(order.addons ?? []).map((addon) => (
+            <p key={addon.id} style={styles.note}>
+              {addonLineText(addon)}
+            </p>
+          ))}
         </article>
       ))}
     </main>
