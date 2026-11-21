@@ -1,0 +1,160 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 18px;
+}
+
+body {
+  margin: 0;
+  color: #1c1a16;
+  background: #f4f1ea;
+  font-family: "PingFang TC", "Noto Sans CJK TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  line-height: 1.45;
+}
+
+a {
+  color: #6b3a12;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #2b2118;
+  color: #f7f1e6;
+}
+
+.app-nav a,
+.app-nav button {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 18px;
+  text-decoration: none;
+  color: #f7f1e6;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.app-nav a[aria-current="page"] {
+  background: #c4a574;
+  color: #1c140c;
+  font-weight: 700;
+}
+
+.app-nav button {
+  background: #4a3828;
+}
+
+.app-nav-brand {
+  font-weight: 700;
+}
+
+.app-nav-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-nav-label {
+  padding: 0 6px;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  color: #d9c7ae;
+}
+
+.app-nav-spacer {
+  flex: 1 1 12px;
+}
+
+.app-nav-who {
+  font-size: 15px;
+  color: #d9c7ae;
+}
+
+.login-page {
+  max-width: 440px;
+  margin: 8vh auto 48px;
+  padding: 28px 24px 32px;
+  background: #fff;
+  border: 1px solid #ddd4c6;
+  border-radius: 16px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.login-form input,
+.login-form button {
+  min-height: 56px;
+  font-size: 20px;
+  padding: 0 14px;
+}
+
+.login-form button {
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  html {
+    font-size: 16px;
+  }
+
+  .app-nav {
+    gap: 6px;
+    padding: 8px 10px;
+  }
+
+  .app-nav a,
+  .app-nav button {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: 16px;
+  }
+
+  .app-nav-who {
+    flex-basis: 100%;
+  }
+
+  .login-page {
+    margin: 16px 12px 32px;
+  }
+
+  .kitchen-qty {
+    font-size: 40px !important;
+    min-width: 64px !important;
+  }
+
+  .kitchen-name {
+    font-size: 22px !important;
+  }
+}

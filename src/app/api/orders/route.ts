@@ -1,0 +1,254 @@
+import { writeAudit } from "@/lib/audit";
+import { requireRole, requireUser, type User } from "@/lib/auth";
+import { sql, withTransaction, type SqlFn } from "@/lib/db";
+import {
+  ADDON_SELECT,
+  attachAddons,
+  defaultAmountPaid,
+  nameSearchPattern,
+  ORDER_SELECT,
+  serializeAddon,
+  serializeOrder,
+  SOUP_DISH_NAME,
+  SOUP_SET_NAME,
+  type AddonRow,
+  type OrderRow,
+} from "@/lib/orders";
+
+type Body = {
+  customer_name?: unknown;
+  phone?: unknown;
+  service_type?: unknown;
+  menu_set_id?: unknown;
+  slot_id?: unknown;
+  price?: unknown;
+  amount_paid?: unknown;
+  parent_order_item_id?: unknown;
+  dish_id?: unknown;
+};
+
+function isResponse(value: unknown): value is Response {
+  return value instanceof Response;
+}
+
+async function requireAdmin(request: Request): Promise<User | Response> {
+  const user = await requireUser(request);
+  if (isResponse(user)) return user;
+  return requireRole(user, ["admin"]);
+}
+
+async function readBody(request: Request): Promise<Body | Response> {
+  try {
+    return (await request.json()) as Body;
+  } catch {
+    return Response.json({ error: "資料格式錯誤" }, { status: 400 });
+  }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function asInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number(value.trim());
+  return undefined;
+}
+
+function asServiceType(value: unknown): "takeout" | "dine_in" | undefined {
+  const raw = asString(value);
+  if (raw === "takeout" || raw === "dine_in") return raw;
+  return undefined;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function explicitAmount(value: unknown): number | undefined | Response {
+  if (value === undefined || value === null || value === "") return undefined;
+  const amount = asInt(value);
+  if (amount === undefined || amount < 0) {
+    return Response.json({ error: "已收須為非負整數" }, { status: 400 });
+  }
+  return amount;
+}
+
+async function resolvePrice(
+  bodyPrice: unknown,
+  menuSetId: string | null,
+  query: SqlFn,
+): Promise<number | Response> {
+  let fromSet: number | undefined;
+  if (menuSetId) {
+    const rows = await query<{ price: number }>("select price from menu_sets where id = $1", [menuSetId]);
+    if (!rows[0]) return Response.json({ error: "找不到級距" }, { status: 400 });
+    fromSet = Number(rows[0].price);
+  }
+  if (bodyPrice === undefined || bodyPrice === null || bodyPrice === "") {
+    if (fromSet === undefined) return Response.json({ error: "售價必填" }, { status: 400 });
+    return fromSet;
+  }
+  const price = asInt(bodyPrice);
+  if (price === undefined || price < 0) {
+    return Response.json({ error: "售價須為非負整數" }, { status: 400 });
+  }
+  return price;
+}
+
+export async function GET(request: Request): Promise<Response> {
+  const user = await requireUser(request);
+  if (isResponse(user)) return user;
+
+  const q = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+  const rows = q
+    ? await sql<OrderRow>(
+        `${ORDER_SELECT}
+         where oi.deleted_at is null
+           and oi.customer_name ilike $1 escape '\\'
+         order by oi.created_at, oi.id`,
+        [nameSearchPattern(q)],
+      )
+    : await sql<OrderRow>(
+        `${ORDER_SELECT}
+         where oi.deleted_at is null
+         order by oi.created_at, oi.id`,
+      );
+  const orders = await attachAddons(sql, rows.map(serializeOrder));
+  return Response.json({ orders, role: user.role });
+}
+
+async function createAddon(admin: User, body: Body): Promise<Response> {
+  const parentId = asString(body.parent_order_item_id);
+  if (!parentId || !UUID_RE.test(parentId)) {
+    return Response.json({ error: "母項目不正確" }, { status: 400 });
+  }
+  let dishId: string | null = null;
+  if (body.dish_id !== undefined && body.dish_id !== null && body.dish_id !== "") {
+    const parsed = asString(body.dish_id);
+    if (!parsed || !UUID_RE.test(parsed)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    dishId = parsed;
+  }
+  const requestedPaid = explicitAmount(body.amount_paid);
+  if (isResponse(requestedPaid)) return requestedPaid;
+  let requestedPrice: number | undefined;
+  if (body.price !== undefined && body.price !== null && body.price !== "") {
+    const parsed = asInt(body.price);
+    if (parsed === undefined || parsed < 0) {
+      return Response.json({ error: "售價須為非負整數" }, { status: 400 });
+    }
+    requestedPrice = parsed;
+  }
+
+  try {
+    const created = await withTransaction(async (query) => {
+      const parent = await query<{ id: string }>(
+        "select id from order_items where id = $1 and deleted_at is null",
+        [parentId],
+      );
+      if (!parent[0]) return Response.json({ error: "找不到母項目" }, { status: 400 });
+
+      if (!dishId) {
+        const dishes = await query<{ id: string }>("select id from dishes where name = $1", [SOUP_DISH_NAME]);
+        if (!dishes[0]) return Response.json({ error: "找不到上湯魚翅羹" }, { status: 400 });
+        dishId = dishes[0].id;
+      } else {
+        const dishes = await query<{ id: string }>("select id from dishes where id = $1", [dishId]);
+        if (!dishes[0]) return Response.json({ error: "找不到菜色" }, { status: 400 });
+      }
+
+      let price = requestedPrice;
+      if (price === undefined) {
+        const sets = await query<{ price: number }>("select price from menu_sets where name = $1", [SOUP_SET_NAME]);
+        price = sets[0] ? Number(sets[0].price) : 1700;
+      }
+      const amountPaid = requestedPaid ?? defaultAmountPaid(price);
+      const rows = await query<{ id: string }>(
+        `insert into addons (parent_order_item_id, dish_id, price, amount_paid)
+         values ($1, $2, $3, $4)
+         returning id`,
+        [parentId, dishId, price, amountPaid],
+      );
+      const full = await query<AddonRow>(`${ADDON_SELECT} where a.id = $1`, [rows[0].id]);
+      const after = serializeAddon(full[0]);
+      await writeAudit(
+        {
+          userId: admin.id,
+          action: "create",
+          entity: "addons",
+          entityId: after.id,
+          after,
+        },
+        query,
+      );
+      return after;
+    });
+    if (created instanceof Response) return created;
+    return Response.json(created, { status: 201 });
+  } catch {
+    return Response.json({ error: "無法建立加購" }, { status: 400 });
+  }
+}
+
+export async function POST(request: Request): Promise<Response> {
+  const admin = await requireAdmin(request);
+  if (isResponse(admin)) return admin;
+  const body = await readBody(request);
+  if (body instanceof Response) return body;
+  if (body.parent_order_item_id !== undefined && body.parent_order_item_id !== null && body.parent_order_item_id !== "") {
+    return createAddon(admin, body);
+  }
+
+  const customerName = asString(body.customer_name);
+  const phone = asString(body.phone);
+  const serviceType = asServiceType(body.service_type);
+  const slotId = asString(body.slot_id);
+  if (body.menu_set_id == null || body.menu_set_id === "") {
+    return Response.json({ error: "級距必填" }, { status: 400 });
+  }
+  const menuSetId = asString(body.menu_set_id);
+  if (!menuSetId) return Response.json({ error: "級距不正確" }, { status: 400 });
+  if (!customerName || !phone || !serviceType || !slotId) {
+    return Response.json({ error: "姓名、電話、內用或外帶、時段必填" }, { status: 400 });
+  }
+  const requestedPaid = explicitAmount(body.amount_paid);
+  if (isResponse(requestedPaid)) return requestedPaid;
+
+  try {
+    const created = await withTransaction(async (query) => {
+      const slot = await query<{ id: string; service_type: string }>(
+        "select id, service_type from day_slots where id = $1",
+        [slotId],
+      );
+      if (!slot[0]) return Response.json({ error: "找不到時段" }, { status: 400 });
+      if (slot[0].service_type !== serviceType) {
+        return Response.json({ error: "時段與內用或外帶不符" }, { status: 400 });
+      }
+      const price = await resolvePrice(body.price, menuSetId, query);
+      if (isResponse(price)) return price;
+      const amountPaid = requestedPaid ?? defaultAmountPaid(price);
+      const rows = await query<OrderRow>(
+        `insert into order_items
+           (customer_name, phone, service_type, menu_set_id, slot_id, price, amount_paid)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         returning id`,
+        [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid],
+      );
+      const full = await query<OrderRow>(`${ORDER_SELECT} where oi.id = $1`, [rows[0].id]);
+      const after = (await attachAddons(query, [serializeOrder(full[0])]))[0];
+      await writeAudit(
+        {
+          userId: admin.id,
+          action: "create",
+          entity: "order_items",
+          entityId: after.id,
+          after,
+        },
+        query,
+      );
+      return after;
+    });
+    if (created instanceof Response) return created;
+    return Response.json(created, { status: 201 });
+  } catch {
+    return Response.json({ error: "無法建立訂單" }, { status: 400 });
+  }
+}

@@ -1,0 +1,25 @@
+import type { ReactNode } from "react";
+import type { Metadata, Viewport } from "next";
+import { AppNav } from "@/components/AppNav";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "漢滄年菜後台",
+  description: "漢滄年菜外場、廚房與設定",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="zh-Hant">
+      <body>
+        <AppNav />
+        {children}
+      </body>
+    </html>
+  );
+}
