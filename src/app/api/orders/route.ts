@@ -273,11 +273,12 @@ export async function POST(request: Request): Promise<Response> {
   const phone = asString(body.phone);
   const serviceType = asServiceType(body.service_type);
   const slotId = asString(body.slot_id);
-  const menuSetId =
+  const parsedMenuSetId =
     body.menu_set_id == null || body.menu_set_id === "" ? null : asString(body.menu_set_id);
-  if (body.menu_set_id != null && body.menu_set_id !== "" && !menuSetId) {
+  if (body.menu_set_id != null && body.menu_set_id !== "" && !parsedMenuSetId) {
     return Response.json({ error: "年菜價格不正確" }, { status: 400 });
   }
+  const menuSetId: string | null = parsedMenuSetId ?? null;
   if (!customerName || !phone || !serviceType || !slotId) {
     return Response.json({ error: "姓名、電話、內用或外帶、時段必填" }, { status: 400 });
   }

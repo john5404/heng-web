@@ -17,6 +17,7 @@ type Body = {
   id?: unknown;
   name?: unknown;
   price?: unknown;
+  alacarte_price?: unknown;
   menu_set_id?: unknown;
   dish_id?: unknown;
   new_dish_id?: unknown;
