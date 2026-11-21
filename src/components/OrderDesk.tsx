@@ -2,7 +2,7 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
-import { alacarteMenu, addonLineText } from "@/lib/alacarte";
+import { alacarteMenu, addonLineText, registerSetChoices } from "@/lib/alacarte";
 import { phonePopupOn } from "@/lib/phone";
 
 type AddonItem = {
@@ -216,7 +216,7 @@ export default function OrderDesk() {
 
   const canManage = role === "admin";
   const canPick = role === "admin" || role === "pickup";
-  const soupSet = sets.find((item) => item.name === "單點上湯魚翅羹");
+  const setChoices = registerSetChoices(sets);
 
   function onPickSet(menuSetId: string) {
     const set = sets.find((item) => item.id === menuSetId);
@@ -268,7 +268,7 @@ export default function OrderDesk() {
       <section style={styles.card}>
         <h2 style={styles.h2}>新增項目</h2>
         <p style={styles.note}>
-          已收預設 2000；售價低於 2000 則預設收滿。魚翅羹可單點，或加在既有項目上，訂金與領取各自計算。單點選了之後數量是 1，沒有單價的菜這一列售價是 0。
+          已收預設 2000；售價低於 2000 則預設收滿。上湯魚翅羹在單點清單，沿用既有單份價格，數量可改。加在既有項目上時，訂金與領取各自計算。單點選了之後數量是 1，沒有單價的菜這一列售價是 0。
         </p>
         <form
           onSubmit={onCreate}
@@ -320,18 +320,13 @@ export default function OrderDesk() {
               required
             >
               <option value="">選擇年菜價格</option>
-              {sets.map((set) => (
+              {setChoices.map((set) => (
                 <option key={set.id} value={set.id}>
                   {set.name}（{set.price}）
                 </option>
               ))}
             </select>
           </label>
-          {soupSet ? (
-            <button type="button" style={styles.button} onClick={() => onPickSet(soupSet.id)}>
-              單點上湯魚翅羹
-            </button>
-          ) : null}
           <label style={styles.field}>
             時段
             <select

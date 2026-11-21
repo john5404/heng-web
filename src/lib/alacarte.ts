@@ -1,3 +1,5 @@
+import { SOUP_SET_NAME } from "./orders";
+
 export type AlacarteSet = {
   price: number;
   dishes: { id: string; name: string; sort_order: number }[];
@@ -18,6 +20,11 @@ export function unitPriceForDish(dishId: string, sets: { price: number; dishIds:
 
 export function linePrice(unitPrice: number, quantity: number): number {
   return unitPrice * quantity;
+}
+
+/** 年菜價格 choices. Standalone 上湯魚翅羹 is a 單點 row, not a set button. */
+export function registerSetChoices<T extends { name: string }>(sets: T[]): T[] {
+  return sets.filter((set) => set.name !== SOUP_SET_NAME);
 }
 
 /**

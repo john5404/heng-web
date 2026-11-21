@@ -15,6 +15,7 @@ type AddonItem = {
   remaining: number;
   paid_in_full: boolean;
   picked_up: boolean;
+  quantity: number;
 };
 
 type OrderItem = {
@@ -298,7 +299,7 @@ describe("addons and pickup role", () => {
     );
   });
 
-  it("sells 上湯魚翅羹 as its own item or as an addon, defaulting paid to min(2000, price)", async () => {
+  it("sells 上湯魚翅羹 from the 單點 list at 1700 per portion, or as an addon", async () => {
     const admin = await adminCookie();
     const pickup = await roleCookie("addon_pickup", "pickup");
     const slot = await slotId();
@@ -308,24 +309,28 @@ describe("addons and pickup role", () => {
     );
     expect(Number(sets[0].price)).toBe(1700);
     const mid = await menuSet("六千六套餐");
+    const soupDish = await sql<{ id: string }>("select id from dishes where name = $1", [SOUP]);
 
     const alone = await POST(
       request("POST", admin, "http://localhost/api/orders", {
         customer_name: "單點魚翅",
         phone: "0912111333",
         service_type: "takeout",
-        menu_set_id: sets[0].id,
+        menu_set_id: mid.id,
         slot_id: slot,
+        alacarte: [{ dish_id: soupDish[0].id, quantity: 1 }],
       }),
     );
     expect(alone.status).toBe(201);
     const standalone = (await alone.json()) as OrderItem;
-    expect(standalone.menu_set_name).toBe("單點上湯魚翅羹");
-    expect(standalone.price).toBe(1700);
-    expect(standalone.amount_paid).toBe(1700);
-    expect(standalone.remaining).toBe(0);
-    expect(standalone.paid_in_full).toBe(true);
-    expect(standalone.addons ?? []).toEqual([]);
+    expect(standalone.menu_set_name).toBe("六千六套餐");
+    expect(standalone.addons?.find((addon) => addon.dish_name === SOUP)).toMatchObject({
+      quantity: 1,
+      price: 1700,
+      amount_paid: 1700,
+      remaining: 0,
+      paid_in_full: true,
+    });
 
     const parentRes = await POST(
       request("POST", admin, "http://localhost/api/orders", {

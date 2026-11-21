@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { GET, POST } from "../src/app/api/orders/route";
-import { alacarteMenu, addonLineText, linePrice } from "../src/lib/alacarte";
+import { alacarteMenu, addonLineText, linePrice, registerSetChoices } from "../src/lib/alacarte";
 import { createSession, hashPassword, SESSION_COOKIE } from "../src/lib/auth";
 import { sql } from "../src/lib/db";
 import { dishTotalsForSlot } from "../src/lib/kitchen";
@@ -73,6 +73,8 @@ describe("單點 menu", () => {
     expect(new Set(menu.map((dish) => dish.id))).toEqual(ids);
     expect(menu.find((dish) => dish.name === SOUP)?.unitPrice).toBe(1700);
     expect(menu.find((dish) => dish.name === SHRIMP)?.unitPrice).toBe(0);
+    expect(sets.some((set) => set.name === "單點上湯魚翅羹")).toBe(true);
+    expect(registerSetChoices(sets).map((set) => set.name)).not.toContain("單點上湯魚翅羹");
     expect(linePrice(0, 2)).toBe(0);
     expect(linePrice(1700, 2)).toBe(3400);
     expect(addonLineText({ dish_name: SHRIMP, quantity: 2, price: 0 })).toBe(`加購 ${SHRIMP} ×2 售價 0`);
