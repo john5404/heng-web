@@ -22,6 +22,7 @@ type OrderItem = {
   service_date: string;
   slot_label: string;
   price: number;
+  total: number;
   amount_paid: number;
   remaining: number;
   paid_in_full: boolean;
@@ -240,6 +241,7 @@ export default function FloorPage() {
           <p style={styles.meta}>年菜價格 {order.menu_set_name ?? "未選套餐"}</p>
           {order.note ? <p style={styles.meta}>備註 {order.note}</p> : null}
           <p style={styles.money}>
+            合計 {order.total}
             已收 {order.amount_paid}
             <span style={styles.remain}>剩餘 {order.paid_in_full ? "已付清" : order.remaining}</span>
             <span>{order.picked_up ? "已領取" : "未領取"}</span>

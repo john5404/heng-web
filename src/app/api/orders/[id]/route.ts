@@ -24,6 +24,7 @@ type Body = {
   amount_paid?: unknown;
   picked_up?: unknown;
   note?: unknown;
+  quantity?: unknown;
 };
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -148,12 +149,12 @@ async function markPickedUp(user: User, id: string, pickedUp: boolean): Promise<
   }
 }
 
-const ADDON_FIELDS = new Set(["price", "amount_paid", "picked_up"]);
+const ADDON_FIELDS = new Set(["price", "amount_paid", "picked_up", "quantity"]);
 
 async function updateAddon(query: SqlFn, admin: User, id: string, body: Body): Promise<AddonJson | Response> {
   const keys = Object.keys(body);
   if (keys.some((key) => !ADDON_FIELDS.has(key))) {
-    return Response.json({ error: "加購只能改售價、已收或領取" }, { status: 400 });
+    return Response.json({ error: "加購只能改售價、數量、已收或領取" }, { status: 400 });
   }
   const before = await loadAddon(query, id);
   if (!before) return Response.json({ error: "找不到訂單" }, { status: 404 });
@@ -181,10 +182,18 @@ async function updateAddon(query: SqlFn, admin: User, id: string, body: Body): P
     }
     pickedUp = body.picked_up;
   }
+  let quantity = before.quantity;
+  if (body.quantity !== undefined) {
+    const parsed = asInt(body.quantity);
+    if (parsed === undefined || parsed < 1) {
+      return Response.json({ error: "數量須為正整數" }, { status: 400 });
+    }
+    quantity = parsed;
+  }
   await query(
-    `update addons set price = $1, amount_paid = $2, picked_up = $3
-     where id = $4 and deleted_at is null`,
-    [price, amountPaid, pickedUp, id],
+    `update addons set price = $1, amount_paid = $2, picked_up = $3, quantity = $4
+     where id = $5 and deleted_at is null`,
+    [price, amountPaid, pickedUp, quantity, id],
   );
   const after = await loadAddon(query, id);
   if (!after) return Response.json({ error: "找不到訂單" }, { status: 404 });

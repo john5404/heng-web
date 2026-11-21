@@ -3,6 +3,8 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
 import { addonLineText, orderAlacarteDishes, registerSetChoices } from "@/lib/alacarte";
+import { isPaidInFull, orderTotal, remainingAmount } from "@/lib/money";
+import { defaultAmountPaid } from "@/lib/orders";
 import { phonePopupOn } from "@/lib/phone";
 
 type AddonItem = {
@@ -30,6 +32,7 @@ type OrderItem = {
   service_date: string;
   slot_label: string;
   price: number;
+  total: number;
   amount_paid: number;
   remaining: number;
   paid_in_full: boolean;
@@ -58,6 +61,7 @@ export default function OrderDesk() {
   const [query, setQuery] = useState("");
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [paidDrafts, setPaidDrafts] = useState<Record<string, string>>({});
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   const [sets, setSets] = useState<MenuSet[]>([]);
   const [catalog, setCatalog] = useState<CatalogDish[]>([]);
   const [lines, setLines] = useState<AddedLine[]>([]);
@@ -122,11 +126,13 @@ export default function OrderDesk() {
       setOrders(data.orders);
       if (data.role === "admin" || data.role === "pickup" || data.role === "viewer") setRole(data.role);
       const drafts: Record<string, string> = {};
+      const prices: Record<string, string> = {};
       for (const order of data.orders) {
         drafts[order.id] = String(order.amount_paid);
-        for (const addon of order.addons ?? []) drafts[addon.id] = String(addon.amount_paid);
+        prices[order.id] = String(order.price);
       }
       setPaidDrafts(drafts);
+      setPriceDrafts(prices);
     } finally {
       setPending(false);
     }
@@ -210,6 +216,23 @@ export default function OrderDesk() {
   const dishChoices = orderAlacarteDishes(
     catalog.map((dish) => ({ ...dish, unitPrice: Number(dish.alacarte_price) })),
   );
+  const typedSetPrice = form.price.trim() === "" ? undefined : Number(form.price);
+  const selectedSet = sets.find((set) => set.id === form.menu_set_id);
+  const setPortion =
+    typedSetPrice !== undefined && Number.isInteger(typedSetPrice) && typedSetPrice >= 0
+      ? typedSetPrice
+      : typedSetPrice === undefined
+        ? (selectedSet?.price ?? 0)
+        : 0;
+  const draftTotal = orderTotal(
+    setPortion,
+    lines.flatMap((line) => {
+      const dish = dishChoices.find((item) => item.id === line.dishId);
+      return dish ? [{ price: dish.unitPrice, quantity: line.quantity }] : [];
+    }),
+  );
+  const draftPaid = defaultAmountPaid(draftTotal);
+  const draftRemaining = remainingAmount(draftTotal, draftPaid);
 
   function addDish() {
     if (!pickedDishId) return;
@@ -229,6 +252,17 @@ export default function OrderDesk() {
     setLines((prev) => {
       if (quantity < 1) return prev.filter((line) => line.dishId !== dishId);
       return prev.map((line) => (line.dishId === dishId ? { ...line, quantity } : line));
+    });
+  }
+
+  function changeAddonQty(addonId: string, raw: number) {
+    const quantity = Number.isFinite(raw) ? Math.max(0, Math.trunc(raw)) : 0;
+    const saving =
+      quantity < 1
+        ? mutate(`/api/orders/${addonId}`, "DELETE")
+        : mutate(`/api/orders/${addonId}`, "PATCH", { quantity });
+    void saving.then((ok) => {
+      if (ok) void search(query);
     });
   }
 
@@ -286,7 +320,7 @@ export default function OrderDesk() {
       <section style={styles.card}>
         <h2 style={styles.h2}>新增項目</h2>
         <p style={styles.note}>
-          已收預設 2000；售價低於 2000 則預設收滿。年菜價格可以不選，但沒有年菜價格時至少要加一道單點。單點從清單選菜再按＋，上湯魚翅羹排第一，數量預設 1，改成 0 就拿掉。單點價格在菜項設定。廚房依菜名與數量備料。
+          合計是年菜價格加上每道單點的價格乘數量。已收預設 2000；合計低於 2000 則預設收滿。年菜價格可以不選，但沒有年菜價格時至少要加一道單點。單點從清單選菜再按＋，上湯魚翅羹排第一，數量預設 1，改成 0 就拿掉。單點價格在菜項設定，加進去之後不會跟著菜項改價。廚房依菜名與數量備料。
         </p>
         <form
           onSubmit={onCreate}
@@ -429,6 +463,11 @@ export default function OrderDesk() {
               style={styles.input}
             />
           </label>
+          <p style={styles.money}>
+            合計 {draftTotal}
+            <span>已收預設 {draftPaid}</span>
+            <span style={styles.remain}>剩餘 {isPaidInFull(draftTotal, draftPaid) ? "已付清" : draftRemaining}</span>
+          </p>
           <label style={styles.field}>
             備註
             <input
@@ -472,6 +511,21 @@ export default function OrderDesk() {
           </p>
           {order.note ? <p style={styles.meta}>備註 {order.note}</p> : null}
           <p style={styles.money}>
+            合計 {order.total}
+            {canManage ? (
+              <label style={styles.inlineLabel}>
+                年菜售價
+                <input
+                  aria-label={`${order.customer_name} 年菜售價`}
+                  inputMode="numeric"
+                  value={priceDrafts[order.id] ?? String(order.price)}
+                  onChange={(e) => setPriceDrafts((prev) => ({ ...prev, [order.id]: e.target.value }))}
+                  style={styles.moneyInput}
+                />
+              </label>
+            ) : (
+              <span>年菜售價 {order.price}</span>
+            )}
             已收{" "}
             {canManage ? (
               <input
@@ -494,6 +548,7 @@ export default function OrderDesk() {
                 style={styles.button}
                 onClick={() =>
                   mutate(`/api/orders/${order.id}`, "PATCH", {
+                    price: Number(priceDrafts[order.id] ?? order.price),
                     amount_paid: Number(paidDrafts[order.id] ?? order.amount_paid),
                   }).then((ok) => {
                     if (ok) void search(query);
@@ -535,38 +590,45 @@ export default function OrderDesk() {
           {(order.addons ?? []).map((addon) => (
             <div key={addon.id} style={styles.addon}>
               <h3 style={styles.h2}>{addonLineText(addon)}</h3>
-              <p style={styles.money}>
-                售價 {addon.price} · 已收{" "}
+              <div style={styles.alacarteRow}>
+                <span>單點價格 {addon.price}</span>
                 {canManage ? (
-                  <input
-                    aria-label={`${order.customer_name} ${addon.dish_name} 已收`}
-                    inputMode="numeric"
-                    value={paidDrafts[addon.id] ?? String(addon.amount_paid)}
-                    onChange={(e) => setPaidDrafts((prev) => ({ ...prev, [addon.id]: e.target.value }))}
-                    style={styles.moneyInput}
-                  />
+                  <>
+                    <button
+                      type="button"
+                      style={styles.button}
+                      aria-label={`${addon.dish_name} 減少`}
+                      onClick={() => changeAddonQty(addon.id, addon.quantity - 1)}
+                    >
+                      −
+                    </button>
+                    <input
+                      key={`${addon.id}-${addon.quantity}`}
+                      aria-label={`${addon.dish_name} 數量`}
+                      inputMode="numeric"
+                      defaultValue={String(addon.quantity)}
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim();
+                        if (raw === "" || !/^\d+$/.test(raw)) return;
+                        const quantity = Number(raw);
+                        if (quantity !== addon.quantity) changeAddonQty(addon.id, quantity);
+                      }}
+                      style={styles.qty}
+                    />
+                    <button
+                      type="button"
+                      style={styles.button}
+                      aria-label={`${addon.dish_name} 增加`}
+                      onClick={() => changeAddonQty(addon.id, addon.quantity + 1)}
+                    >
+                      ＋
+                    </button>
+                  </>
                 ) : (
-                  <span>{addon.amount_paid}</span>
+                  <span>×{addon.quantity}</span>
                 )}
-                <span style={styles.remain}>剩餘 {addon.paid_in_full ? "已付清" : addon.remaining}</span>
-              </p>
+              </div>
               <div style={styles.actions}>
-                {canManage ? (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    style={styles.button}
-                    onClick={() =>
-                      mutate(`/api/orders/${addon.id}`, "PATCH", {
-                        amount_paid: Number(paidDrafts[addon.id] ?? addon.amount_paid),
-                      }).then((ok) => {
-                        if (ok) void search(query);
-                      })
-                    }
-                  >
-                    儲存已收
-                  </button>
-                ) : null}
                 {canPick ? (
                   <button
                     type="button"

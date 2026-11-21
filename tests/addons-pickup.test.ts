@@ -22,6 +22,7 @@ type OrderItem = {
   id: string;
   customer_name: string;
   price: number;
+  total: number;
   amount_paid: number;
   remaining: number;
   paid_in_full: boolean;
@@ -207,7 +208,7 @@ describe("addons and pickup role", () => {
     expect(actions.map((item) => item.action)).not.toContain("delete");
   });
 
-  it("keeps addon remaining independent of the parent item", async () => {
+  it("rolls a 單點 line into the order total without a second deposit", async () => {
     const admin = await adminCookie();
     const slot = await slotId();
     const wan = await menuSet("萬元套餐");
@@ -225,6 +226,7 @@ describe("addons and pickup role", () => {
     expect(parentRes.status).toBe(201);
     const parent = (await parentRes.json()) as OrderItem;
     expect(parent.remaining).toBe(8000);
+    expect(parent.total).toBe(10000);
 
     const addonRes = await POST(
       request("POST", admin, "http://localhost/api/orders", {
@@ -238,9 +240,7 @@ describe("addons and pickup role", () => {
     expect(addon.parent_order_item_id).toBe(parent.id);
     expect(addon.dish_name).toBe(SOUP);
     expect(addon.price).toBe(1700);
-    expect(addon.amount_paid).toBe(500);
-    expect(addon.remaining).toBe(remainingAmount(1700, 500));
-    expect(addon.paid_in_full).toBe(false);
+    expect(addon.amount_paid).toBe(0);
     expect(addon.picked_up).toBe(false);
 
     const listed = await GET(
@@ -249,22 +249,13 @@ describe("addons and pickup role", () => {
     expect(listed.status).toBe(200);
     const orders = ((await listed.json()) as { orders: OrderItem[] }).orders;
     const found = orders.find((order) => order.id === parent.id);
-    expect(found?.remaining).toBe(8000);
     expect(found?.amount_paid).toBe(2000);
+    expect(found?.total).toBe(11700);
+    expect(found?.remaining).toBe(9700);
+    expect(found?.paid_in_full).toBe(false);
     expect(found?.addons).toHaveLength(1);
     expect(found?.addons?.[0].id).toBe(addon.id);
-    expect(found?.addons?.[0].remaining).toBe(1200);
-    expect((found?.remaining ?? 0) + (found?.addons?.[0].remaining ?? 0)).not.toBe(found?.remaining);
-
-    const paidAddon = await PATCH(
-      request("PATCH", admin, `http://localhost/api/orders/${addon.id}`, { amount_paid: 1700 }),
-      params(addon.id),
-    );
-    expect(paidAddon.status).toBe(200);
-    const paid = (await paidAddon.json()) as AddonItem;
-    expect(paid.remaining).toBe(0);
-    expect(paid.paid_in_full).toBe(true);
-    expect(paid.parent_order_item_id).toBe(parent.id);
+    expect(found?.addons?.[0].amount_paid).toBe(0);
 
     const parentAfterAddon = await sql<{ amount_paid: number; price: number }>(
       "select amount_paid, price from order_items where id = $1",
@@ -274,29 +265,27 @@ describe("addons and pickup role", () => {
     expect(Number(parentAfterAddon[0].price)).toBe(10000);
 
     const paidParent = await PATCH(
-      request("PATCH", admin, `http://localhost/api/orders/${parent.id}`, { amount_paid: 10000 }),
+      request("PATCH", admin, `http://localhost/api/orders/${parent.id}`, { amount_paid: 11700 }),
       params(parent.id),
     );
     expect(paidParent.status).toBe(200);
     const parentPaid = (await paidParent.json()) as OrderItem;
+    expect(parentPaid.total).toBe(11700);
     expect(parentPaid.remaining).toBe(0);
     expect(parentPaid.paid_in_full).toBe(true);
-    expect(parentPaid.addons?.[0].remaining).toBe(0);
-    expect(parentPaid.addons?.[0].amount_paid).toBe(1700);
+    expect(parentPaid.addons?.[0].amount_paid).toBe(0);
 
     const addonRow = await sql<{ amount_paid: number }>(
       "select amount_paid from addons where id = $1",
       [addon.id],
     );
-    expect(Number(addonRow[0].amount_paid)).toBe(1700);
+    expect(Number(addonRow[0].amount_paid)).toBe(0);
 
     const addonAudits = await sql<{ action: string; entity: string }>(
       "select action, entity from audit_logs where entity_id = $1",
       [addon.id],
     );
-    expect(addonAudits.map((row) => `${row.entity}:${row.action}`)).toEqual(
-      expect.arrayContaining(["addons:create", "addons:update"]),
-    );
+    expect(addonAudits.map((row) => `${row.entity}:${row.action}`)).toEqual(["addons:create"]);
   });
 
   it("sells 上湯魚翅羹 from the 單點 list at 1700 per portion, or as an addon", async () => {
@@ -324,12 +313,13 @@ describe("addons and pickup role", () => {
     expect(alone.status).toBe(201);
     const standalone = (await alone.json()) as OrderItem;
     expect(standalone.menu_set_name).toBe("六千六套餐");
+    expect(standalone.total).toBe(8300);
+    expect(standalone.amount_paid).toBe(2000);
+    expect(standalone.remaining).toBe(6300);
     expect(standalone.addons?.find((addon) => addon.dish_name === SOUP)).toMatchObject({
       quantity: 1,
       price: 1700,
-      amount_paid: 1700,
-      remaining: 0,
-      paid_in_full: true,
+      amount_paid: 0,
     });
 
     const parentRes = await POST(
@@ -384,9 +374,7 @@ describe("addons and pickup role", () => {
     const addon = (await addonRes.json()) as AddonItem;
     expect(addon.dish_name).toBe(SOUP);
     expect(addon.price).toBe(1700);
-    expect(addon.amount_paid).toBe(1700);
-    expect(addon.remaining).toBe(0);
-    expect(addon.paid_in_full).toBe(true);
+    expect(addon.amount_paid).toBe(0);
 
     const listed = await GET(
       request("GET", admin, "http://localhost/api/orders?q=%E5%96%AE%E9%BB%9E%E9%AD%9A%E7%BF%85"),
@@ -396,9 +384,10 @@ describe("addons and pickup role", () => {
     );
     expect(orders.map((order) => order.id)).toEqual(expect.arrayContaining([standalone.id, parent.id]));
     const withAddon = orders.find((order) => order.id === parent.id);
-    expect(withAddon?.remaining).toBe(remainingAmount(6600, 2000));
+    expect(withAddon?.total).toBe(8300);
+    expect(withAddon?.remaining).toBe(6300);
     expect(withAddon?.addons?.map((item) => item.id)).toEqual([addon.id]);
-    expect(withAddon?.addons?.[0].remaining).toBe(0);
+    expect(withAddon?.addons?.[0].amount_paid).toBe(0);
 
     const before = await auditIds(addon.id);
     const denied = await PATCH(
@@ -410,7 +399,7 @@ describe("addons and pickup role", () => {
     const unpaid = await sql<{ amount_paid: number }>("select amount_paid from addons where id = $1", [
       addon.id,
     ]);
-    expect(Number(unpaid[0].amount_paid)).toBe(1700);
+    expect(Number(unpaid[0].amount_paid)).toBe(0);
 
     const picked = await PATCH(
       request("PATCH", pickup, `http://localhost/api/orders/${addon.id}`, { picked_up: true }),
@@ -419,8 +408,7 @@ describe("addons and pickup role", () => {
     expect(picked.status).toBe(200);
     const pickedAddon = (await picked.json()) as AddonItem;
     expect(pickedAddon.picked_up).toBe(true);
-    expect(pickedAddon.amount_paid).toBe(1700);
-    expect(pickedAddon.remaining).toBe(0);
+    expect(pickedAddon.amount_paid).toBe(0);
     const parentStill = await sql<{ picked_up: boolean }>(
       "select picked_up from order_items where id = $1",
       [parent.id],

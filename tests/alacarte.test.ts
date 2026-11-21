@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { DELETE, PATCH } from "../src/app/api/orders/[id]/route";
 import { GET, POST } from "../src/app/api/orders/route";
+import { PATCH as patchMenu, POST as postMenu } from "../src/app/api/settings/menu/route";
 import { addonLineText, linePrice, orderAlacarteDishes, registerSetChoices } from "../src/lib/alacarte";
 import { createSession, hashPassword, SESSION_COOKIE } from "../src/lib/auth";
 import { sql } from "../src/lib/db";
@@ -13,6 +15,10 @@ type Addon = { dish_name: string; quantity: number; price: number; amount_paid: 
 type Order = {
   id: string;
   price: number;
+  total: number;
+  amount_paid: number;
+  remaining: number;
+  paid_in_full: boolean;
   addons: Addon[];
   menu_set_name: string | null;
   slot_id: string;
@@ -106,9 +112,14 @@ describe("單點 menu", () => {
     });
     expect(order.addons.find((addon) => addon.dish_name === SOUP)).toMatchObject({
       quantity: 2,
-      price: 3400,
-      amount_paid: 2000,
+      price: 1700,
+      amount_paid: 0,
     });
+    expect(order.price).toBe(8000);
+    expect(order.total).toBe(11400);
+    expect(order.amount_paid).toBe(2000);
+    expect(order.remaining).toBe(9400);
+    expect(order.paid_in_full).toBe(false);
 
     const listed = await GET(request("GET", cookie, `http://localhost/api/orders?slot=${slot}`));
     const found = ((await listed.json()) as { orders: Order[] }).orders.find((item) => item.id === order.id);
@@ -137,8 +148,11 @@ describe("單點 menu", () => {
     expect(defaulted.addons.find((addon) => addon.dish_name === SOUP)).toMatchObject({
       quantity: 1,
       price: 1700,
-      amount_paid: 1700,
+      amount_paid: 0,
     });
+    expect(defaulted.total).toBe(9700);
+    expect(defaulted.amount_paid).toBe(2000);
+    expect(defaulted.remaining).toBe(7700);
 
     const badQty = await POST(
       request("POST", cookie, "http://localhost/api/orders", {
@@ -189,8 +203,12 @@ describe("單點 menu", () => {
     expect(order.addons.find((addon) => addon.dish_name === SOUP)).toMatchObject({
       quantity: 1,
       price: 1700,
-      amount_paid: 1700,
+      amount_paid: 0,
     });
+    expect(order.total).toBe(1700);
+    expect(order.amount_paid).toBe(1700);
+    expect(order.remaining).toBe(0);
+    expect(order.paid_in_full).toBe(true);
 
     const listed = await GET(request("GET", cookie, `http://localhost/api/orders?slot=${slot}`));
     const found = ((await listed.json()) as { orders: Order[] }).orders.find((item) => item.id === order.id);
@@ -209,5 +227,75 @@ describe("單點 menu", () => {
     );
     expect(empty.status).toBe(400);
     expect(((await empty.json()) as { error?: string }).error).toBe("請至少加入一道單點");
+  });
+
+  it("recalculates one remaining amount and keeps the snapshotted 單點 price", async () => {
+    const cookie = await adminCookie();
+    const slot = await slotId("合計時段", "15:00", "15:30");
+    const made = await postMenu(
+      request("POST", cookie, "http://localhost/api/settings/menu", {
+        type: "dish",
+        name: "合計小菜",
+        price: 80,
+      }),
+    );
+    expect(made.status).toBe(201);
+    const dish = (await made.json()) as { id: string };
+    const created = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "合計客人",
+        phone: "0912555020",
+        service_type: "takeout",
+        slot_id: slot,
+        alacarte: [{ dish_id: dish.id, quantity: 1 }],
+      }),
+    );
+    const order = (await created.json()) as Order;
+    expect(order.total).toBe(80);
+    expect(order.amount_paid).toBe(80);
+    expect(order.paid_in_full).toBe(true);
+    const line = order.addons[0];
+    const changedMenu = await patchMenu(
+      request("PATCH", cookie, "http://localhost/api/settings/menu", {
+        type: "dish_price",
+        id: dish.id,
+        alacarte_price: 120,
+      }),
+    );
+    expect(changedMenu.status).toBe(200);
+
+    const more = await PATCH(
+      request("PATCH", cookie, `http://localhost/api/orders/${line.id}`, { quantity: 2 }),
+      { params: Promise.resolve({ id: line.id }) },
+    );
+    expect(more.status).toBe(200);
+    const listed = await GET(request("GET", cookie, `http://localhost/api/orders?slot=${slot}`));
+    const doubled = ((await listed.json()) as { orders: Order[] }).orders.find((item) => item.id === order.id);
+    expect(doubled?.addons[0]).toMatchObject({ price: 80, quantity: 2, amount_paid: 0 });
+    expect(doubled?.total).toBe(160);
+    expect(doubled?.amount_paid).toBe(80);
+    expect(doubled?.remaining).toBe(80);
+    expect(doubled?.paid_in_full).toBe(false);
+
+    const repriced = await PATCH(
+      request("PATCH", cookie, `http://localhost/api/orders/${order.id}`, { price: 1000 }),
+      { params: Promise.resolve({ id: order.id }) },
+    );
+    expect(repriced.status).toBe(200);
+    const withSet = (await repriced.json()) as Order;
+    expect(withSet.price).toBe(1000);
+    expect(withSet.total).toBe(1160);
+    expect(withSet.remaining).toBe(1080);
+
+    const removed = await DELETE(
+      request("DELETE", cookie, `http://localhost/api/orders/${line.id}`),
+      { params: Promise.resolve({ id: line.id }) },
+    );
+    expect(removed.status).toBe(200);
+    const afterDelete = await GET(request("GET", cookie, `http://localhost/api/orders?slot=${slot}`));
+    const left = ((await afterDelete.json()) as { orders: Order[] }).orders.find((item) => item.id === order.id);
+    expect(left?.addons).toEqual([]);
+    expect(left?.total).toBe(1000);
+    expect(left?.remaining).toBe(920);
   });
 });

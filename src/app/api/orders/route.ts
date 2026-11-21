@@ -1,4 +1,4 @@
-import { linePrice } from "@/lib/alacarte";
+import { orderTotal } from "@/lib/money";
 import { writeAudit } from "@/lib/audit";
 import { requireRole, requireUser, type User } from "@/lib/auth";
 import { sql, withTransaction, type SqlFn } from "@/lib/db";
@@ -111,12 +111,11 @@ async function prepareAlacarte(
       [line.dish_id],
     );
     if (!found[0]) return Response.json({ error: "找不到菜色" }, { status: 400 });
-    const price = linePrice(Number(found[0].alacarte_price), line.quantity);
     prepared.push({
       dish_id: line.dish_id,
       quantity: line.quantity,
-      price,
-      amount_paid: defaultAmountPaid(price),
+      price: Number(found[0].alacarte_price),
+      amount_paid: 0,
     });
   }
   return prepared;
@@ -196,8 +195,6 @@ async function createAddon(admin: User, body: Body): Promise<Response> {
     if (!parsed || !UUID_RE.test(parsed)) return Response.json({ error: "菜色不正確" }, { status: 400 });
     dishId = parsed;
   }
-  const requestedPaid = explicitAmount(body.amount_paid);
-  if (isResponse(requestedPaid)) return requestedPaid;
   let requestedPrice: number | undefined;
   if (body.price !== undefined && body.price !== null && body.price !== "") {
     const parsed = asInt(body.price);
@@ -232,12 +229,11 @@ async function createAddon(admin: User, body: Body): Promise<Response> {
         );
         price = Number(priced[0]?.alacarte_price ?? 0);
       }
-      const amountPaid = requestedPaid ?? defaultAmountPaid(price);
       const rows = await query<{ id: string }>(
-        `insert into addons (parent_order_item_id, dish_id, price, amount_paid)
-         values ($1, $2, $3, $4)
+        `insert into addons (parent_order_item_id, dish_id, price, amount_paid, quantity)
+         values ($1, $2, $3, 0, 1)
          returning id`,
-        [parentId, dishId, price, amountPaid],
+        [parentId, dishId, price],
       );
       const full = await query<AddonRow>(`${ADDON_SELECT} where a.id = $1`, [rows[0].id]);
       const after = serializeAddon(full[0]);
@@ -310,7 +306,7 @@ export async function POST(request: Request): Promise<Response> {
       if (isResponse(price)) return price;
       const portions = await prepareAlacarte(query, alacarte);
       if (portions instanceof Response) return portions;
-      const amountPaid = requestedPaid ?? defaultAmountPaid(price);
+      const amountPaid = requestedPaid ?? defaultAmountPaid(orderTotal(price, portions));
       const rows = await query<OrderRow>(
         `insert into order_items
            (customer_name, phone, service_type, menu_set_id, slot_id, price, amount_paid, note)

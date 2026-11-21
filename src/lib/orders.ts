@@ -1,5 +1,5 @@
 import type { SqlFn } from "./db";
-import { isPaidInFull, remainingAmount } from "./money";
+import { isPaidInFull, orderTotal, remainingAmount } from "./money";
 
 export const DEFAULT_AMOUNT_PAID = 2000;
 export const SOUP_DISH_NAME = "上湯魚翅羹";
@@ -72,6 +72,7 @@ export type OrderJson = {
   start_time: string;
   end_time: string;
   price: number;
+  total: number;
   amount_paid: number;
   remaining: number;
   paid_in_full: boolean;
@@ -96,6 +97,16 @@ export const ADDON_SELECT = `select a.id, a.parent_order_item_id, a.dish_id, d.n
   a.price, a.amount_paid, a.picked_up, a.quantity
 from addons a
 join dishes d on d.id = a.dish_id`;
+
+export function withOrderBalance(order: OrderJson): OrderJson {
+  const total = orderTotal(order.price, order.addons);
+  return {
+    ...order,
+    total,
+    remaining: remainingAmount(total, order.amount_paid),
+    paid_in_full: isPaidInFull(total, order.amount_paid),
+  };
+}
 
 export function serializeAddon(row: AddonRow): AddonJson {
   const price = Number(row.price);
@@ -169,7 +180,8 @@ export async function attachSetDishes(query: SqlFn, orders: OrderJson[]): Promis
 }
 
 export async function attachOrderDetails(query: SqlFn, orders: OrderJson[]): Promise<OrderJson[]> {
-  return attachSetDishes(query, await attachAddons(query, orders));
+  const detailed = await attachSetDishes(query, await attachAddons(query, orders));
+  return detailed.map(withOrderBalance);
 }
 
 export function serializeOrder(row: OrderRow): OrderJson {
@@ -188,6 +200,7 @@ export function serializeOrder(row: OrderRow): OrderJson {
     start_time: String(row.start_time).slice(0, 8),
     end_time: String(row.end_time).slice(0, 8),
     price,
+    total: price,
     amount_paid: amountPaid,
     remaining: remainingAmount(price, amountPaid),
     paid_in_full: isPaidInFull(price, amountPaid),

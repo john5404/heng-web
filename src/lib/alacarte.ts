@@ -26,5 +26,5 @@ export function orderAlacarteDishes<T extends { name: string }>(dishes: T[]): T[
 
 export function addonLineText(addon: { dish_name: string; quantity?: number; price: number }): string {
   const quantity = addon.quantity && addon.quantity > 0 ? addon.quantity : 1;
-  return `加購 ${addon.dish_name} ×${quantity} 售價 ${addon.price}`;
+  return `加購 ${addon.dish_name} ×${quantity} 售價 ${addon.price * quantity}`;
 }
