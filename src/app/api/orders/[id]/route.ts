@@ -12,6 +12,7 @@ import {
   type OrderJson,
   type OrderRow,
 } from "@/lib/orders";
+import { isTaiwanPhone, TAIWAN_PHONE_ERROR } from "@/lib/phone";
 
 type Body = {
   customer_name?: unknown;
@@ -220,13 +221,16 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
       if (!customerName || !phone || !serviceType || !slotId) {
         return Response.json({ error: "姓名、電話、內用或外帶、時段必填" }, { status: 400 });
       }
+      if (body.phone !== undefined && !isTaiwanPhone(phone)) {
+        return Response.json({ error: TAIWAN_PHONE_ERROR }, { status: 400 });
+      }
 
       let menuSetId = before.menu_set_id;
       if (body.menu_set_id !== undefined) {
         if (body.menu_set_id === null || body.menu_set_id === "") menuSetId = null;
         else {
           const parsed = asString(body.menu_set_id);
-          if (!parsed) return Response.json({ error: "級距不正確" }, { status: 400 });
+          if (!parsed) return Response.json({ error: "年菜價格不正確" }, { status: 400 });
           menuSetId = parsed;
         }
       }
@@ -241,7 +245,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
       }
       if (menuSetId && menuSetId !== before.menu_set_id) {
         const set = await query<{ id: string }>("select id from menu_sets where id = $1", [menuSetId]);
-        if (!set[0]) return Response.json({ error: "找不到級距" }, { status: 400 });
+        if (!set[0]) return Response.json({ error: "找不到年菜價格" }, { status: 400 });
       }
 
       let price = before.price;

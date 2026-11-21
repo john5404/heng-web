@@ -14,6 +14,7 @@ import {
   type AddonRow,
   type OrderRow,
 } from "@/lib/orders";
+import { isTaiwanPhone, TAIWAN_PHONE_ERROR } from "@/lib/phone";
 
 type Body = {
   customer_name?: unknown;
@@ -80,7 +81,7 @@ async function resolvePrice(
   let fromSet: number | undefined;
   if (menuSetId) {
     const rows = await query<{ price: number }>("select price from menu_sets where id = $1", [menuSetId]);
-    if (!rows[0]) return Response.json({ error: "找不到級距" }, { status: 400 });
+    if (!rows[0]) return Response.json({ error: "找不到年菜價格" }, { status: 400 });
     fromSet = Number(rows[0].price);
   }
   if (bodyPrice === undefined || bodyPrice === null || bodyPrice === "") {
@@ -98,20 +99,31 @@ export async function GET(request: Request): Promise<Response> {
   const user = await requireUser(request);
   if (isResponse(user)) return user;
 
-  const q = new URL(request.url).searchParams.get("q")?.trim() ?? "";
-  const rows = q
-    ? await sql<OrderRow>(
-        `${ORDER_SELECT}
-         where oi.deleted_at is null
-           and oi.customer_name ilike $1 escape '\\'
-         order by oi.created_at, oi.id`,
-        [nameSearchPattern(q)],
-      )
-    : await sql<OrderRow>(
-        `${ORDER_SELECT}
-         where oi.deleted_at is null
-         order by oi.created_at, oi.id`,
-      );
+  const url = new URL(request.url);
+  const q = url.searchParams.get("q")?.trim() ?? "";
+  const slotParams = url.searchParams.getAll("slot");
+  if (slotParams.some((slot) => !UUID_RE.test(slot))) {
+    return Response.json({ error: "時段不正確" }, { status: 400 });
+  }
+  const filters = ["oi.deleted_at is null"];
+  const params: unknown[] = [];
+  if (q) {
+    params.push(nameSearchPattern(q));
+    filters.push(`oi.customer_name ilike $${params.length} escape '\\'`);
+  }
+  if (slotParams.length > 0) {
+    const placeholders = slotParams.map((slot) => {
+      params.push(slot);
+      return `$${params.length}`;
+    });
+    filters.push(`oi.slot_id in (${placeholders.join(", ")})`);
+  }
+  const rows = await sql<OrderRow>(
+    `${ORDER_SELECT}
+     where ${filters.join(" and ")}
+     order by oi.created_at, oi.id`,
+    params,
+  );
   const orders = await attachAddons(sql, rows.map(serializeOrder));
   return Response.json({ orders, role: user.role });
 }
@@ -202,12 +214,15 @@ export async function POST(request: Request): Promise<Response> {
   const serviceType = asServiceType(body.service_type);
   const slotId = asString(body.slot_id);
   if (body.menu_set_id == null || body.menu_set_id === "") {
-    return Response.json({ error: "級距必填" }, { status: 400 });
+    return Response.json({ error: "年菜價格必填" }, { status: 400 });
   }
   const menuSetId = asString(body.menu_set_id);
-  if (!menuSetId) return Response.json({ error: "級距不正確" }, { status: 400 });
+  if (!menuSetId) return Response.json({ error: "年菜價格不正確" }, { status: 400 });
   if (!customerName || !phone || !serviceType || !slotId) {
     return Response.json({ error: "姓名、電話、內用或外帶、時段必填" }, { status: 400 });
+  }
+  if (!isTaiwanPhone(phone)) {
+    return Response.json({ error: TAIWAN_PHONE_ERROR }, { status: 400 });
   }
   const requestedPaid = explicitAmount(body.amount_paid);
   if (isResponse(requestedPaid)) return requestedPaid;

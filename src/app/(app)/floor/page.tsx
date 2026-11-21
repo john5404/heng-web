@@ -1,15 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 type AddonItem = {
-  id: string;
-  parent_order_item_id: string;
   dish_name: string;
-  price: number;
-  amount_paid: number;
-  remaining: number;
-  paid_in_full: boolean;
   picked_up: boolean;
 };
 
@@ -18,12 +12,10 @@ type OrderItem = {
   customer_name: string;
   phone: string;
   service_type: "takeout" | "dine_in";
-  menu_set_id: string | null;
   menu_set_name: string | null;
   slot_id: string;
   service_date: string;
   slot_label: string;
-  price: number;
   amount_paid: number;
   remaining: number;
   paid_in_full: boolean;
@@ -33,7 +25,6 @@ type OrderItem = {
 
 type Role = "admin" | "pickup" | "viewer";
 
-type MenuSet = { id: string; name: string; price: number };
 type Slot = {
   id: string;
   service_date: string;
@@ -46,37 +37,19 @@ function typeLabel(type: string): string {
 }
 
 export default function FloorPage() {
-  const [query, setQuery] = useState("");
-  const [orders, setOrders] = useState<OrderItem[]>([]);
-  const [paidDrafts, setPaidDrafts] = useState<Record<string, string>>({});
-  const [sets, setSets] = useState<MenuSet[]>([]);
   const [slots, setSlots] = useState<Slot[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [orders, setOrders] = useState<OrderItem[]>([]);
+  const [role, setRole] = useState<Role | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const [role, setRole] = useState<Role | null>(null);
-  const [form, setForm] = useState({
-    customer_name: "",
-    phone: "",
-    service_type: "takeout" as "takeout" | "dine_in",
-    menu_set_id: "",
-    slot_id: "",
-    price: "",
-  });
 
   useEffect(() => {
     void (async () => {
-      const [menuRes, slotRes, meRes] = await Promise.all([
-        fetch("/api/settings/menu"),
-        fetch("/api/settings/slots"),
-        fetch("/api/auth/me"),
-      ]);
-      if (menuRes.status === 401 || slotRes.status === 401 || meRes.status === 401) {
+      const [slotRes, meRes] = await Promise.all([fetch("/api/settings/slots"), fetch("/api/auth/me")]);
+      if (slotRes.status === 401 || meRes.status === 401) {
         window.location.href = "/login";
         return;
-      }
-      if (menuRes.ok) {
-        const data = (await menuRes.json()) as { sets: MenuSet[] };
-        setSets(data.sets);
       }
       if (slotRes.ok) {
         const data = (await slotRes.json()) as { slots: Slot[] };
@@ -89,380 +62,146 @@ export default function FloorPage() {
     })();
   }, []);
 
-  async function search(name: string) {
-    setPending(true);
-    setError("");
-    try {
-      const response = await fetch(`/api/orders?q=${encodeURIComponent(name.trim())}`);
-      if (response.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-      if (!response.ok) {
-        setError("搜尋失敗");
-        return;
-      }
-      const data = (await response.json()) as { orders: OrderItem[]; role?: Role };
-      setOrders(data.orders);
-      if (data.role === "admin" || data.role === "pickup" || data.role === "viewer") setRole(data.role);
-      const drafts: Record<string, string> = {};
-      for (const order of data.orders) {
-        drafts[order.id] = String(order.amount_paid);
-        for (const addon of order.addons ?? []) drafts[addon.id] = String(addon.amount_paid);
-      }
-      setPaidDrafts(drafts);
-    } finally {
-      setPending(false);
+  useEffect(() => {
+    if (selected.length === 0) {
+      setOrders([]);
+      return;
     }
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    for (const id of selected) params.append("slot", id);
+    void (async () => {
+      setPending(true);
+      setError("");
+      try {
+        const response = await fetch(`/api/orders?${params.toString()}`, { signal: controller.signal });
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (!response.ok) {
+          setError("讀取客人失敗");
+          return;
+        }
+        const data = (await response.json()) as { orders: OrderItem[]; role?: Role };
+        setOrders(data.orders);
+        if (data.role === "admin" || data.role === "pickup" || data.role === "viewer") setRole(data.role);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError("讀取客人失敗");
+      } finally {
+        if (!controller.signal.aborted) setPending(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [selected]);
+
+  const dates = useMemo(
+    () => [...new Set(slots.map((slot) => slot.service_date))].sort(),
+    [slots],
+  );
+  const canPick = role === "admin" || role === "pickup";
+
+  function toggle(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
   }
 
-  async function onSearch(event: FormEvent) {
-    event.preventDefault();
-    await search(query);
-  }
-
-  async function mutate(url: string, method: string, body?: unknown): Promise<boolean> {
+  async function togglePickup(order: OrderItem) {
     setPending(true);
     setError("");
     try {
-      const response = await fetch(url, {
-        method,
-        headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+      const response = await fetch(`/api/orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ picked_up: !order.picked_up }),
       });
       if (response.status === 401) {
         window.location.href = "/login";
-        return false;
+        return;
       }
       if (response.status === 403) {
         setError("沒有權限");
-        return false;
+        return;
       }
       if (!response.ok) {
         const data = (await response.json().catch(() => ({}))) as { error?: string };
         setError(data.error ?? "儲存失敗");
-        return false;
+        return;
       }
-      return true;
+      setOrders((prev) =>
+        prev.map((item) => (item.id === order.id ? { ...item, picked_up: !item.picked_up } : item)),
+      );
     } finally {
       setPending(false);
     }
   }
 
-  async function onCreate(event: FormEvent) {
-    event.preventDefault();
-    const price = form.price.trim() === "" ? undefined : Number(form.price);
-    const ok = await mutate("/api/orders", "POST", {
-      customer_name: form.customer_name,
-      phone: form.phone,
-      service_type: form.service_type,
-      menu_set_id: form.menu_set_id || null,
-      slot_id: form.slot_id,
-      ...(price === undefined ? {} : { price }),
-    });
-    if (!ok) return;
-    const name = form.customer_name.trim();
-    setQuery(name);
-    setForm((prev) => ({ ...prev, customer_name: "", phone: "", price: "" }));
-    await search(name);
-  }
-
-  const canManage = role === "admin";
-  const canPick = role === "admin" || role === "pickup";
-  const soupSet = sets.find((item) => item.name === "單點上湯魚翅羹");
-
-  function onPickSet(menuSetId: string) {
-    const set = sets.find((item) => item.id === menuSetId);
-    setForm((prev) => ({
-      ...prev,
-      menu_set_id: menuSetId,
-      price: set ? String(set.price) : "",
-    }));
-  }
-
-  function onServiceType(serviceType: "takeout" | "dine_in") {
-    setForm((prev) => {
-      const slot = slots.find((item) => item.id === prev.slot_id);
-      return {
-        ...prev,
-        service_type: serviceType,
-        slot_id: slot?.service_type === serviceType ? prev.slot_id : "",
-      };
-    });
-  }
-
-  const visibleSlots = slots.filter((slot) => slot.service_type === form.service_type);
-
   return (
     <main style={styles.main}>
       <h1 style={styles.h1}>外場</h1>
+      <p style={styles.note}>點選一個或多個時段，查看這些時段要領取的客人。</p>
       {error ? (
         <p role="alert" style={styles.error}>
           {error}
         </p>
       ) : null}
 
-      <form onSubmit={onSearch} style={styles.search}>
-        <label style={styles.field}>
-          搜尋姓名
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="輸入客人姓名"
-            style={styles.input}
-          />
-        </label>
-        <button type="submit" disabled={pending} style={styles.button}>
-          搜尋
-        </button>
-      </form>
+      {dates.map((date) => (
+        <section key={date} style={styles.card}>
+          <h2 style={styles.h2}>{date}</h2>
+          <div style={styles.slots}>
+            {slots
+              .filter((slot) => slot.service_date === date)
+              .map((slot) => {
+                const on = selected.includes(slot.id);
+                return (
+                  <button
+                    key={slot.id}
+                    type="button"
+                    aria-pressed={on}
+                    style={on ? styles.slotOn : styles.slot}
+                    onClick={() => toggle(slot.id)}
+                  >
+                    {typeLabel(slot.service_type)} {slot.label}
+                  </button>
+                );
+              })}
+          </div>
+        </section>
+      ))}
 
-      {canManage ? (
-      <section style={styles.card}>
-        <h2 style={styles.h2}>新增項目</h2>
-        <p style={styles.note}>
-          已收預設 2000；售價低於 2000 則預設收滿。魚翅羹可單點，或加在既有項目上，訂金與領取各自計算。
-        </p>
-        <form onSubmit={onCreate} style={styles.form}>
-          <label style={styles.field}>
-            姓名
-            <input
-              value={form.customer_name}
-              onChange={(e) => setForm((prev) => ({ ...prev, customer_name: e.target.value }))}
-              style={styles.input}
-              required
-            />
-          </label>
-          <label style={styles.field}>
-            電話
-            <input
-              value={form.phone}
-              onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
-              inputMode="tel"
-              style={styles.input}
-              required
-            />
-          </label>
-          <label style={styles.field}>
-            內用／外帶
-            <select
-              value={form.service_type}
-              onChange={(e) => onServiceType(e.target.value as "takeout" | "dine_in")}
-              style={styles.select}
-            >
-              <option value="takeout">外帶</option>
-              <option value="dine_in">內用</option>
-            </select>
-          </label>
-          <label style={styles.field}>
-            級距
-            <select
-              value={form.menu_set_id}
-              onChange={(e) => onPickSet(e.target.value)}
-              style={styles.select}
-              required
-            >
-              <option value="">選擇級距</option>
-              {sets.map((set) => (
-                <option key={set.id} value={set.id}>
-                  {set.name}（{set.price}）
-                </option>
-              ))}
-            </select>
-          </label>
-          {soupSet ? (
-            <button type="button" style={styles.button} onClick={() => onPickSet(soupSet.id)}>
-              單點上湯魚翅羹
-            </button>
-          ) : null}
-          <label style={styles.field}>
-            時段
-            <select
-              value={form.slot_id}
-              onChange={(e) => setForm((prev) => ({ ...prev, slot_id: e.target.value }))}
-              style={styles.select}
-              required
-            >
-              <option value="">選擇時段</option>
-              {visibleSlots.map((slot) => (
-                <option key={slot.id} value={slot.id}>
-                  {slot.service_date} {typeLabel(slot.service_type)} {slot.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={styles.field}>
-            售價
-            <input
-              value={form.price}
-              onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))}
-              inputMode="numeric"
-              style={styles.input}
-            />
-          </label>
-          <button type="submit" disabled={pending} style={styles.button}>
-            新增
-          </button>
-        </form>
-      </section>
+      {selected.length === 0 ? <p style={styles.note}>請選擇時段。</p> : null}
+      {selected.length > 0 && orders.length === 0 && !pending ? (
+        <p style={styles.note}>這些時段還沒有客人。</p>
       ) : null}
-      {role === "pickup" ? <p style={styles.note}>領餐帳號只能標示已領取。</p> : null}
-
-      {orders.length === 0 ? <p style={styles.note}>尚無符合的項目。</p> : null}
       {orders.map((order) => (
         <article key={order.id} style={styles.card}>
           <h2 style={styles.name}>{order.customer_name}</h2>
           <p style={styles.meta}>
-            <span style={styles.badge}>
-              {typeLabel(slots.find((slot) => slot.id === order.slot_id)?.service_type ?? order.service_type)}
-            </span>
+            <span style={styles.badge}>{typeLabel(order.service_type)}</span>
             <span>電話 {order.phone}</span>
+            <span>
+              {order.service_date} {order.slot_label}
+            </span>
           </p>
-          <p style={styles.meta}>
-            級距 {order.menu_set_name ?? "未選套餐"} · {order.service_date} {order.slot_label}
-          </p>
+          <p style={styles.meta}>年菜價格 {order.menu_set_name ?? "未選套餐"}</p>
           <p style={styles.money}>
-            已收{" "}
-            {canManage ? (
-              <input
-                aria-label={`${order.customer_name} 已收`}
-                inputMode="numeric"
-                value={paidDrafts[order.id] ?? String(order.amount_paid)}
-                onChange={(e) => setPaidDrafts((prev) => ({ ...prev, [order.id]: e.target.value }))}
-                style={styles.moneyInput}
-              />
-            ) : (
-              <span>{order.amount_paid}</span>
-            )}
+            已收 {order.amount_paid}
             <span style={styles.remain}>剩餘 {order.paid_in_full ? "已付清" : order.remaining}</span>
+            <span>{order.picked_up ? "已領取" : "未領取"}</span>
           </p>
-          <div style={styles.actions}>
-            {canManage ? (
-              <button
-                type="button"
-                disabled={pending}
-                style={styles.button}
-                onClick={() =>
-                  mutate(`/api/orders/${order.id}`, "PATCH", {
-                    amount_paid: Number(paidDrafts[order.id] ?? order.amount_paid),
-                  }).then((ok) => {
-                    if (ok) void search(query);
-                  })
-                }
-              >
-                儲存已收
-              </button>
-            ) : null}
-            {canPick ? (
-              <button
-                type="button"
-                disabled={pending}
-                style={order.picked_up ? styles.picked : styles.button}
-                onClick={() =>
-                  mutate(`/api/orders/${order.id}`, "PATCH", { picked_up: !order.picked_up }).then((ok) => {
-                    if (ok) void search(query);
-                  })
-                }
-              >
-                {order.picked_up ? "已領取" : "領取"}
-              </button>
-            ) : null}
-            {canManage ? (
-              <button
-                type="button"
-                disabled={pending}
-                style={styles.danger}
-                onClick={() =>
-                  mutate(`/api/orders/${order.id}`, "DELETE").then((ok) => {
-                    if (ok) void search(query);
-                  })
-                }
-              >
-                刪除
-              </button>
-            ) : null}
-          </div>
-          {(order.addons ?? []).map((addon) => (
-            <div key={addon.id} style={styles.addon}>
-              <h3 style={styles.h2}>加購 {addon.dish_name}</h3>
-              <p style={styles.money}>
-                售價 {addon.price} · 已收{" "}
-                {canManage ? (
-                  <input
-                    aria-label={`${order.customer_name} ${addon.dish_name} 已收`}
-                    inputMode="numeric"
-                    value={paidDrafts[addon.id] ?? String(addon.amount_paid)}
-                    onChange={(e) => setPaidDrafts((prev) => ({ ...prev, [addon.id]: e.target.value }))}
-                    style={styles.moneyInput}
-                  />
-                ) : (
-                  <span>{addon.amount_paid}</span>
-                )}
-                <span style={styles.remain}>剩餘 {addon.paid_in_full ? "已付清" : addon.remaining}</span>
-              </p>
-              <div style={styles.actions}>
-                {canManage ? (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    style={styles.button}
-                    onClick={() =>
-                      mutate(`/api/orders/${addon.id}`, "PATCH", {
-                        amount_paid: Number(paidDrafts[addon.id] ?? addon.amount_paid),
-                      }).then((ok) => {
-                        if (ok) void search(query);
-                      })
-                    }
-                  >
-                    儲存已收
-                  </button>
-                ) : null}
-                {canPick ? (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    style={addon.picked_up ? styles.picked : styles.button}
-                    onClick={() =>
-                      mutate(`/api/orders/${addon.id}`, "PATCH", { picked_up: !addon.picked_up }).then((ok) => {
-                        if (ok) void search(query);
-                      })
-                    }
-                  >
-                    {addon.picked_up ? "已領取" : "領取"}
-                  </button>
-                ) : null}
-                {canManage ? (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    style={styles.danger}
-                    onClick={() =>
-                      mutate(`/api/orders/${addon.id}`, "DELETE").then((ok) => {
-                        if (ok) void search(query);
-                      })
-                    }
-                  >
-                    刪除加購
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ))}
-          {canManage ? (
-            <div style={styles.actions}>
-              <button
-                type="button"
-                disabled={pending}
-                style={styles.button}
-                onClick={() =>
-                  mutate("/api/orders", "POST", { parent_order_item_id: order.id }).then((ok) => {
-                    if (ok) void search(query);
-                  })
-                }
-              >
-                加購上湯魚翅羹
-              </button>
-            </div>
+          {canPick ? (
+            <button
+              type="button"
+              disabled={pending}
+              style={order.picked_up ? styles.picked : styles.button}
+              onClick={() => void togglePickup(order)}
+            >
+              {order.picked_up ? "已領取" : "領取"}
+            </button>
+          ) : null}
+          {(order.addons ?? []).length > 0 ? (
+            <p style={styles.note}>加購 {(order.addons ?? []).map((addon) => addon.dish_name).join("、")}</p>
           ) : null}
         </article>
       ))}
@@ -482,14 +221,19 @@ const styles: Record<string, CSSProperties> = {
     marginBottom: 16,
     background: "#fff",
   },
-  search: { display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" },
-  form: { display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" },
-  field: { display: "flex", flexDirection: "column", gap: 6, fontSize: 18, flex: "1 1 180px" },
-  input: { minHeight: 56, fontSize: 22, padding: "0 14px" },
-  select: { minHeight: 56, fontSize: 20 },
+  slots: { display: "flex", gap: 12, flexWrap: "wrap" },
+  slot: { minHeight: 56, minWidth: 140, fontSize: 20, padding: "0 16px" },
+  slotOn: {
+    minHeight: 56,
+    minWidth: 140,
+    fontSize: 20,
+    padding: "0 16px",
+    background: "#6b3a12",
+    color: "#fff",
+    fontWeight: 700,
+  },
   button: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
   picked: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px", background: "#146c43", color: "#fff" },
-  danger: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
   meta: { display: "flex", gap: 12, alignItems: "center", margin: "6px 0", flexWrap: "wrap" },
   badge: {
     minHeight: 40,
@@ -502,16 +246,7 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 700,
   },
   money: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", margin: "12px 0" },
-  moneyInput: { minHeight: 56, width: 140, fontSize: 24, padding: "0 12px" },
   remain: { fontSize: 26, fontWeight: 700 },
-  actions: { display: "flex", gap: 12, flexWrap: "wrap" },
-  addon: {
-    marginTop: 12,
-    padding: 12,
-    borderLeft: "6px solid #8a5a00",
-    background: "#fff8ee",
-    borderRadius: 12,
-  },
   note: { color: "#333", marginTop: 0 },
   error: { color: "#a40000", fontWeight: 700 },
 };

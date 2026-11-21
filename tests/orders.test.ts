@@ -351,4 +351,94 @@ describe("orders API", () => {
     expect(after.service_type).toBe("dine_in");
     expect(after.slot_id).toBe(dineIn);
   });
+
+  it("rejects a phone that is not a Taiwan mobile or landline", async () => {
+    const cookie = await adminCookie();
+    const slot = await slotId();
+    const set = await menuSet("萬元套餐");
+    const created = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "電話格式",
+        phone: "12345",
+        service_type: "takeout",
+        menu_set_id: set.id,
+        slot_id: slot,
+        price: set.price,
+      }),
+    );
+    expect(created.status).toBe(400);
+    const body = (await created.json()) as { error: string };
+    expect(body.error).toContain("電話格式不正確");
+    const missing = await sql<{ id: string }>("select id from order_items where customer_name = $1", [
+      "電話格式",
+    ]);
+    expect(missing).toEqual([]);
+
+    const ok = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "電話格式",
+        phone: "02-2345678",
+        service_type: "takeout",
+        menu_set_id: set.id,
+        slot_id: slot,
+        price: set.price,
+      }),
+    );
+    expect(ok.status).toBe(201);
+    const order = (await ok.json()) as OrderItem;
+    expect(order.phone).toBe("02-2345678");
+
+    const patched = await PATCH(
+      request("PATCH", cookie, `http://localhost/api/orders/${order.id}`, { phone: "09123" }),
+      { params: Promise.resolve({ id: order.id }) },
+    );
+    expect(patched.status).toBe(400);
+    const stored = await sql<{ phone: string }>("select phone from order_items where id = $1", [order.id]);
+    expect(stored[0]?.phone).toBe("02-2345678");
+  });
+
+  it("lists guests only for the selected time slots", async () => {
+    const cookie = await adminCookie();
+    const takeout = await slotId("takeout");
+    const dineIn = await slotId("dine_in");
+    const set = await menuSet("八千套餐");
+    const first = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "午時段客人",
+        phone: "0912888001",
+        service_type: "takeout",
+        menu_set_id: set.id,
+        slot_id: takeout,
+        price: set.price,
+      }),
+    );
+    const second = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "晚時段客人",
+        phone: "0912888002",
+        service_type: "dine_in",
+        menu_set_id: set.id,
+        slot_id: dineIn,
+        price: set.price,
+      }),
+    );
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    const noon = (await first.json()) as OrderItem;
+    const evening = (await second.json()) as OrderItem;
+
+    const one = await GET(request("GET", cookie, `http://localhost/api/orders?slot=${takeout}`));
+    const oneIds = ((await one.json()) as { orders: OrderItem[] }).orders.map((order) => order.id);
+    expect(oneIds).toContain(noon.id);
+    expect(oneIds).not.toContain(evening.id);
+
+    const both = await GET(
+      request("GET", cookie, `http://localhost/api/orders?slot=${takeout}&slot=${dineIn}`),
+    );
+    const bothIds = ((await both.json()) as { orders: OrderItem[] }).orders.map((order) => order.id);
+    expect(bothIds).toEqual(expect.arrayContaining([noon.id, evening.id]));
+
+    const bad = await GET(request("GET", cookie, "http://localhost/api/orders?slot=not-a-slot"));
+    expect(bad.status).toBe(400);
+  });
 });
