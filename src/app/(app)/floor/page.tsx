@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { priceTierCounts } from "@/lib/orders";
 
 type AddonItem = {
   dish_name: string;
@@ -16,6 +17,7 @@ type OrderItem = {
   slot_id: string;
   service_date: string;
   slot_label: string;
+  price: number;
   amount_paid: number;
   remaining: number;
   paid_in_full: boolean;
@@ -96,6 +98,7 @@ export default function FloorPage() {
     return () => controller.abort();
   }, [selected]);
 
+  const tiers = useMemo(() => priceTierCounts(orders), [orders]);
   const dates = useMemo(
     () => [...new Set(slots.map((slot) => slot.service_date))].sort(),
     [slots],
@@ -174,6 +177,29 @@ export default function FloorPage() {
       {selected.length > 0 && orders.length === 0 && !pending ? (
         <p style={styles.note}>這些時段還沒有客人。</p>
       ) : null}
+      {tiers.length > 0 ? (
+        <section style={styles.card}>
+          <h2 style={styles.h2}>年菜價格</h2>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>年菜價格</th>
+                <th style={styles.th}>售價</th>
+                <th style={styles.th}>數量</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tiers.map((row) => (
+                <tr key={`${row.name}-${row.price}`}>
+                  <td style={styles.td}>{row.name}</td>
+                  <td style={styles.td}>{row.price}</td>
+                  <td style={styles.td}>{row.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
       {orders.map((order) => (
         <article key={order.id} style={styles.card}>
           <h2 style={styles.name}>{order.customer_name}</h2>
@@ -249,4 +275,7 @@ const styles: Record<string, CSSProperties> = {
   remain: { fontSize: 26, fontWeight: 700 },
   note: { color: "#333", marginTop: 0 },
   error: { color: "#a40000", fontWeight: 700 },
+  table: { width: "100%", borderCollapse: "collapse", fontSize: 22 },
+  th: { textAlign: "left", padding: "12px 8px", borderBottom: "2px solid #222" },
+  td: { padding: "14px 8px", borderBottom: "1px solid #ddd", fontSize: 24 },
 };

@@ -48,5 +48,21 @@ export async function dishTotalsForSlot(date: string, slotId: string): Promise<D
   }
   return [...qtyByName.entries()]
     .map(([dishName, qty]) => ({ dishName, qty }))
-    .sort((a, b) => b.qty - a.qty || a.dishName.localeCompare(b.dishName, "zh-Hant"));
+    .sort(compareDishTotals);
+}
+
+export function mergeDishTotals(groups: DishTotal[][]): DishTotal[] {
+  const qtyByName = new Map<string, number>();
+  for (const group of groups) {
+    for (const row of group) {
+      qtyByName.set(row.dishName, (qtyByName.get(row.dishName) ?? 0) + row.qty);
+    }
+  }
+  return [...qtyByName.entries()]
+    .map(([dishName, qty]) => ({ dishName, qty }))
+    .sort(compareDishTotals);
+}
+
+function compareDishTotals(a: DishTotal, b: DishTotal): number {
+  return b.qty - a.qty || a.dishName.localeCompare(b.dishName, "zh-Hant");
 }

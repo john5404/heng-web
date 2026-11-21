@@ -5,7 +5,7 @@ import { DELETE, PATCH } from "../src/app/api/orders/[id]/route";
 import { POST } from "../src/app/api/orders/route";
 import { createSession, hashPassword, SESSION_COOKIE } from "../src/lib/auth";
 import { sql } from "../src/lib/db";
-import { dishTotalsForSlot } from "../src/lib/kitchen";
+import { dishTotalsForSlot, mergeDishTotals } from "../src/lib/kitchen";
 
 const DATE = "2027-02-16";
 const SHRIMP = "白灼蒜味蝦";
@@ -196,5 +196,50 @@ describe("kitchen dish totals", () => {
     const admin = await adminCookie();
     const missing = await kitchenGet(request("GET", admin, "http://localhost/api/kitchen?date=2027-02-16"));
     expect(missing.status).toBe(400);
+  });
+
+  it("returns each selected slot and a same-day combined total", async () => {
+    const admin = await adminCookie();
+    const noon = await ensureSlot("廚房多選中午");
+    const evening = await ensureSlot("廚房多選晚上");
+    const leftOut = await ensureSlot("廚房多選未選");
+    const wan = await setId("萬元套餐");
+
+    const create = async (name: string, slotId: string) => {
+      const response = await POST(
+        request("POST", admin, "http://localhost/api/orders", {
+          customer_name: name,
+          phone: "0912333444",
+          service_type: "takeout",
+          menu_set_id: wan,
+          slot_id: slotId,
+        }),
+      );
+      expect(response.status).toBe(201);
+    };
+    await create("多選中午客", noon);
+    await create("多選晚上客", evening);
+    await create("多選未選客", leftOut);
+
+    const listed = await kitchenGet(
+      request(
+        "GET",
+        admin,
+        `http://localhost/api/kitchen?date=${DATE}&slot_id=${noon}&slot_id=${evening}`,
+      ),
+    );
+    expect(listed.status).toBe(200);
+    const body = (await listed.json()) as {
+      by_slot: { slot_id: string; label: string; totals: { dishName: string; qty: number }[] }[];
+      combined: { dishName: string; qty: number }[];
+      totals: { dishName: string; qty: number }[];
+    };
+    expect(body.by_slot.map((slot) => slot.slot_id)).toEqual([noon, evening]);
+    expect(qtyOf(body.by_slot[0].totals, SHRIMP)).toBe(1);
+    expect(qtyOf(body.by_slot[1].totals, SHRIMP)).toBe(1);
+    expect(qtyOf(body.combined, SHRIMP)).toBe(2);
+    expect(qtyOf(body.totals, SHRIMP)).toBe(2);
+    expect(mergeDishTotals(body.by_slot.map((slot) => slot.totals))).toEqual(body.combined);
+    expect(body.by_slot.some((slot) => slot.slot_id === leftOut)).toBe(false);
   });
 });

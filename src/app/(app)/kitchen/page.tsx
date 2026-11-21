@@ -12,6 +12,13 @@ type Slot = {
 
 type DishTotal = { dishName: string; qty: number };
 
+type SlotTotals = {
+  slot_id: string;
+  label: string;
+  service_type: string;
+  totals: DishTotal[];
+};
+
 function typeLabel(type: string): string {
   return type === "dine_in" ? "內用" : "外帶";
 }
@@ -19,8 +26,9 @@ function typeLabel(type: string): string {
 export default function KitchenPage() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [date, setDate] = useState("2027-02-05");
-  const [slotId, setSlotId] = useState("");
-  const [totals, setTotals] = useState<DishTotal[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bySlot, setBySlot] = useState<SlotTotals[]>([]);
+  const [combined, setCombined] = useState<DishTotal[]>([]);
   const [note, setNote] = useState("備料總量＝該時段有效訂單菜量");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -52,39 +60,55 @@ export default function KitchenPage() {
   );
 
   useEffect(() => {
-    if (daySlots.some((slot) => slot.id === slotId)) return;
-    setSlotId(daySlots[0]?.id ?? "");
-  }, [daySlots, slotId]);
+    setSelected((prev) => {
+      const next = prev.filter((id) => daySlots.some((slot) => slot.id === id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [daySlots]);
+
+  function toggle(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  }
 
   useEffect(() => {
-    if (!date || !slotId) {
-      setTotals([]);
+    if (!date || selected.length === 0) {
+      setBySlot([]);
+      setCombined([]);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
+    const params = new URLSearchParams({ date });
+    for (const id of selected) params.append("slot_id", id);
     setPending(true);
     setError("");
     void (async () => {
-      const response = await fetch(`/api/kitchen?date=${encodeURIComponent(date)}&slot_id=${encodeURIComponent(slotId)}`);
-      if (cancelled) return;
-      if (response.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
-      if (!response.ok) {
+      try {
+        const response = await fetch(`/api/kitchen?${params.toString()}`, { signal: controller.signal });
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (!response.ok) {
+          setError("讀取備料失敗");
+          return;
+        }
+        const data = (await response.json()) as {
+          by_slot: SlotTotals[];
+          combined: DishTotal[];
+          note?: string;
+        };
+        setBySlot(data.by_slot);
+        setCombined(data.combined);
+        if (data.note) setNote(data.note);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setError("讀取備料失敗");
-        setPending(false);
-        return;
+      } finally {
+        if (!controller.signal.aborted) setPending(false);
       }
-      const data = (await response.json()) as { totals: DishTotal[]; note?: string };
-      setTotals(data.totals);
-      if (data.note) setNote(data.note);
-      setPending(false);
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [date, slotId]);
+    return () => controller.abort();
+  }, [date, selected]);
 
   return (
     <main style={styles.main}>
@@ -106,40 +130,77 @@ export default function KitchenPage() {
             style={styles.input}
           />
         </label>
-        <label style={styles.field}>
-          時段
-          <select value={slotId} onChange={(event) => setSlotId(event.target.value)} style={styles.select}>
-            {daySlots.length === 0 ? <option value="">此時段尚無設定</option> : null}
-            {daySlots.map((slot) => (
-              <option key={slot.id} value={slot.id}>
+        <div style={styles.slots}>
+          {daySlots.length === 0 ? <p style={styles.note}>這天還沒有時段。</p> : null}
+          {daySlots.map((slot) => {
+            const on = selected.includes(slot.id);
+            return (
+              <button
+                key={slot.id}
+                type="button"
+                aria-pressed={on}
+                style={on ? styles.slotOn : styles.slot}
+                onClick={() => toggle(slot.id)}
+              >
                 {typeLabel(slot.service_type)} {slot.label} {slot.start_time.slice(0, 5)}
-              </option>
-            ))}
-          </select>
-        </label>
+              </button>
+            );
+          })}
+        </div>
         {dates.length > 0 ? (
           <p style={styles.note}>已排日期：{dates.join("、")}</p>
         ) : null}
       </div>
 
+      {selected.length === 0 ? <p style={styles.note}>請選擇一個或多個時段。</p> : null}
       {pending ? <p style={styles.note}>計算中…</p> : null}
-      {!pending && slotId && totals.length === 0 ? <p style={styles.note}>此時段尚無備料。</p> : null}
-      <ul style={styles.list}>
-        {totals.map((row) => (
-          <li key={row.dishName} style={styles.row}>
-            <span className="kitchen-qty" style={styles.qty}>{row.qty}</span>
-            <span className="kitchen-name" style={styles.name}>{row.dishName}</span>
-            <span style={styles.unit}>份</span>
-          </li>
-        ))}
-      </ul>
+      {bySlot.map((slot) => (
+        <section key={slot.slot_id}>
+          <h2 style={styles.h2}>
+            {typeLabel(slot.service_type)} {slot.label || "時段"}
+          </h2>
+          {slot.totals.length === 0 ? <p style={styles.note}>此時段尚無備料。</p> : <DishList rows={slot.totals} />}
+        </section>
+      ))}
+      {selected.length > 0 ? (
+        <section>
+          <h2 style={styles.h2}>當日合計</h2>
+          {combined.length === 0 && !pending ? <p style={styles.note}>所選時段尚無備料。</p> : <DishList rows={combined} />}
+        </section>
+      ) : null}
     </main>
+  );
+}
+
+function DishList({ rows }: { rows: DishTotal[] }) {
+  return (
+    <ul style={styles.list}>
+      {rows.map((row) => (
+        <li key={row.dishName} style={styles.row}>
+          <span className="kitchen-qty" style={styles.qty}>{row.qty}</span>
+          <span className="kitchen-name" style={styles.name}>{row.dishName}</span>
+          <span style={styles.unit}>份</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
 const styles: Record<string, CSSProperties> = {
   main: { maxWidth: 960, margin: "0 auto", padding: 16, fontSize: 22, lineHeight: 1.4 },
   h1: { fontSize: 36, margin: "8px 0 8px" },
+  h2: { fontSize: 28, margin: "16px 0 8px" },
+  slots: { display: "flex", gap: 12, flexWrap: "wrap", flex: "1 1 100%" },
+  slot: { minHeight: 56, minWidth: 160, fontSize: 20, padding: "0 16px" },
+  slotOn: {
+    minHeight: 56,
+    minWidth: 160,
+    fontSize: 20,
+    padding: "0 16px",
+    background: "#6b3a12",
+    color: "#fff",
+    fontWeight: 700,
+  },
   note: { color: "#333", margin: "8px 0" },
   error: { color: "#a40000", fontWeight: 700 },
   filters: { display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 16 },

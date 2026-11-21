@@ -143,6 +143,29 @@ export function serializeOrder(row: OrderRow): OrderJson {
   };
 }
 
+export type PriceTierCount = {
+  name: string;
+  price: number;
+  count: number;
+};
+
+/** Count selected-slot orders by 年菜價格. Addons are not separate tiers. */
+export function priceTierCounts(
+  orders: { menu_set_name: string | null; price: number }[],
+): PriceTierCount[] {
+  const grouped = new Map<string, PriceTierCount>();
+  for (const order of orders) {
+    const name = order.menu_set_name ?? "未選套餐";
+    const key = `${name}\0${order.price}`;
+    const row = grouped.get(key) ?? { name, price: order.price, count: 0 };
+    row.count += 1;
+    grouped.set(key, row);
+  }
+  return [...grouped.values()].sort(
+    (a, b) => b.price - a.price || a.name.localeCompare(b.name, "zh-Hant"),
+  );
+}
+
 export function nameSearchPattern(query: string): string {
   const escaped = query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   return `%${escaped}%`;
