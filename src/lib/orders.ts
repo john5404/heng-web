@@ -25,6 +25,7 @@ export type OrderRow = {
   price: number | string;
   amount_paid: number | string;
   picked_up: boolean;
+  note: string;
 };
 
 export type AddonRow = {
@@ -66,6 +67,7 @@ export type OrderJson = {
   remaining: number;
   paid_in_full: boolean;
   picked_up: boolean;
+  note: string;
   addons: AddonJson[];
 };
 
@@ -75,7 +77,7 @@ export const ORDER_SELECT = `select oi.id, oi.customer_name, oi.phone, oi.servic
   ds.label as slot_label,
   to_char(ds.start_time, 'HH24:MI:SS') as start_time,
   to_char(ds.end_time, 'HH24:MI:SS') as end_time,
-  oi.price, oi.amount_paid, oi.picked_up
+  oi.price, oi.amount_paid, oi.picked_up, oi.note
 from order_items oi
 join day_slots ds on ds.id = oi.slot_id
 left join menu_sets ms on ms.id = oi.menu_set_id`;
@@ -139,6 +141,7 @@ export function serializeOrder(row: OrderRow): OrderJson {
     remaining: remainingAmount(price, amountPaid),
     paid_in_full: isPaidInFull(price, amountPaid),
     picked_up: Boolean(row.picked_up),
+    note: row.note ?? "",
     addons: [],
   };
 }
@@ -148,6 +151,15 @@ export type PriceTierCount = {
   price: number;
   count: number;
 };
+
+/** null tier means every order. Otherwise keep one 年菜價格 name. */
+export function ordersMatchingTier<T extends { menu_set_name: string | null }>(
+  orders: T[],
+  tier: string | null,
+): T[] {
+  if (!tier) return orders;
+  return orders.filter((order) => (order.menu_set_name ?? "未選套餐") === tier);
+}
 
 /** Count selected-slot orders by 年菜價格. Addons are not separate tiers. */
 export function priceTierCounts(

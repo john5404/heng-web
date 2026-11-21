@@ -18,6 +18,7 @@ type OrderItem = {
   remaining: number;
   paid_in_full: boolean;
   picked_up: boolean;
+  note?: string;
 };
 
 async function ensureAdminUser(): Promise<string> {
@@ -440,5 +441,35 @@ describe("orders API", () => {
 
     const bad = await GET(request("GET", cookie, "http://localhost/api/orders?slot=not-a-slot"));
     expect(bad.status).toBe(400);
+  });
+
+  it("saves a note on the order and returns it", async () => {
+    const cookie = await adminCookie();
+    const slot = await slotId();
+    const set = await menuSet("六千六套餐");
+    const created = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "有備註",
+        phone: "0912777000",
+        service_type: "takeout",
+        menu_set_id: set.id,
+        slot_id: slot,
+        note: "  門口取貨  ",
+      }),
+    );
+    expect(created.status).toBe(201);
+    const order = (await created.json()) as OrderItem;
+    expect(order.note).toBe("門口取貨");
+
+    const listed = await GET(request("GET", cookie, "http://localhost/api/orders?q=%E6%9C%89%E5%82%99%E8%A8%BB"));
+    const found = ((await listed.json()) as { orders: OrderItem[] }).orders.find((item) => item.id === order.id);
+    expect(found?.note).toBe("門口取貨");
+
+    const cleared = await PATCH(
+      request("PATCH", cookie, `http://localhost/api/orders/${order.id}`, { note: "" }),
+      { params: Promise.resolve({ id: order.id }) },
+    );
+    expect(cleared.status).toBe(200);
+    expect(((await cleared.json()) as OrderItem).note).toBe("");
   });
 });

@@ -23,6 +23,7 @@ type Body = {
   price?: unknown;
   amount_paid?: unknown;
   picked_up?: unknown;
+  note?: unknown;
 };
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -47,6 +48,14 @@ function asInt(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isInteger(value)) return value;
   if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number(value.trim());
   return undefined;
+}
+
+function asNote(value: unknown): string | Response | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") return Response.json({ error: "備註不正確" }, { status: 400 });
+  const note = value.trim();
+  if (note.length > 500) return Response.json({ error: "備註最多 500 字" }, { status: 400 });
+  return note;
 }
 
 function asServiceType(value: unknown): "takeout" | "dine_in" | undefined {
@@ -274,12 +283,19 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
         pickedUp = body.picked_up;
       }
 
+      let note = before.note;
+      if (body.note !== undefined) {
+        const parsed = asNote(body.note);
+        if (parsed instanceof Response) return parsed;
+        note = parsed ?? "";
+      }
+
       await query(
         `update order_items
          set customer_name = $1, phone = $2, service_type = $3, menu_set_id = $4,
-             slot_id = $5, price = $6, amount_paid = $7, picked_up = $8
-         where id = $9 and deleted_at is null`,
-        [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid, pickedUp, id],
+             slot_id = $5, price = $6, amount_paid = $7, picked_up = $8, note = $9
+         where id = $10 and deleted_at is null`,
+        [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid, pickedUp, note, id],
       );
       const after = await loadOrder(query, id);
       if (!after) return Response.json({ error: "找不到訂單" }, { status: 404 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState, type CSSProperties } from "react";
+import { phoneFieldWarning } from "@/lib/phone";
 
 type AddonItem = {
   id: string;
@@ -28,6 +29,7 @@ type OrderItem = {
   remaining: number;
   paid_in_full: boolean;
   picked_up: boolean;
+  note: string;
   addons?: AddonItem[];
 };
 
@@ -61,6 +63,7 @@ export default function OrderDesk() {
     menu_set_id: "",
     slot_id: "",
     price: "",
+    note: "",
   });
 
   useEffect(() => {
@@ -149,8 +152,14 @@ export default function OrderDesk() {
     }
   }
 
+  const phoneWarning = phoneFieldWarning(form.phone);
+
   async function onCreate(event: FormEvent) {
     event.preventDefault();
+    if (phoneWarning) {
+      setError(phoneWarning);
+      return;
+    }
     const price = form.price.trim() === "" ? undefined : Number(form.price);
     const ok = await mutate("/api/orders", "POST", {
       customer_name: form.customer_name,
@@ -158,12 +167,13 @@ export default function OrderDesk() {
       service_type: form.service_type,
       menu_set_id: form.menu_set_id || null,
       slot_id: form.slot_id,
+      note: form.note,
       ...(price === undefined ? {} : { price }),
     });
     if (!ok) return;
     const name = form.customer_name.trim();
     setQuery(name);
-    setForm((prev) => ({ ...prev, customer_name: "", phone: "", price: "" }));
+    setForm((prev) => ({ ...prev, customer_name: "", phone: "", price: "", note: "" }));
     await search(name);
   }
 
@@ -240,8 +250,14 @@ export default function OrderDesk() {
               onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
               inputMode="tel"
               style={styles.input}
+              aria-invalid={phoneWarning ? true : undefined}
               required
             />
+            {phoneWarning ? (
+              <span role="alert" style={styles.error}>
+                {phoneWarning}
+              </span>
+            ) : null}
           </label>
           <label style={styles.field}>
             內用／外帶
@@ -300,7 +316,16 @@ export default function OrderDesk() {
               style={styles.input}
             />
           </label>
-          <button type="submit" disabled={pending} style={styles.button}>
+          <label style={styles.field}>
+            備註
+            <input
+              value={form.note}
+              onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
+              style={styles.input}
+              maxLength={500}
+            />
+          </label>
+          <button type="submit" disabled={pending || Boolean(phoneWarning)} style={styles.button}>
             新增
           </button>
         </form>
@@ -321,6 +346,7 @@ export default function OrderDesk() {
           <p style={styles.meta}>
             年菜價格 {order.menu_set_name ?? "未選套餐"} · {order.service_date} {order.slot_label}
           </p>
+          {order.note ? <p style={styles.meta}>備註 {order.note}</p> : null}
           <p style={styles.money}>
             已收{" "}
             {canManage ? (

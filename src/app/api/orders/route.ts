@@ -26,6 +26,7 @@ type Body = {
   amount_paid?: unknown;
   parent_order_item_id?: unknown;
   dish_id?: unknown;
+  note?: unknown;
 };
 
 function isResponse(value: unknown): value is Response {
@@ -54,6 +55,14 @@ function asInt(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isInteger(value)) return value;
   if (typeof value === "string" && /^-?\d+$/.test(value.trim())) return Number(value.trim());
   return undefined;
+}
+
+function asNote(value: unknown): string | Response | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") return Response.json({ error: "備註不正確" }, { status: 400 });
+  const note = value.trim();
+  if (note.length > 500) return Response.json({ error: "備註最多 500 字" }, { status: 400 });
+  return note;
 }
 
 function asServiceType(value: unknown): "takeout" | "dine_in" | undefined {
@@ -224,6 +233,9 @@ export async function POST(request: Request): Promise<Response> {
   if (!isTaiwanPhone(phone)) {
     return Response.json({ error: TAIWAN_PHONE_ERROR }, { status: 400 });
   }
+  const parsedNote = asNote(body.note);
+  if (parsedNote instanceof Response) return parsedNote;
+  const note = parsedNote ?? "";
   const requestedPaid = explicitAmount(body.amount_paid);
   if (isResponse(requestedPaid)) return requestedPaid;
 
@@ -242,10 +254,10 @@ export async function POST(request: Request): Promise<Response> {
       const amountPaid = requestedPaid ?? defaultAmountPaid(price);
       const rows = await query<OrderRow>(
         `insert into order_items
-           (customer_name, phone, service_type, menu_set_id, slot_id, price, amount_paid)
-         values ($1, $2, $3, $4, $5, $6, $7)
+           (customer_name, phone, service_type, menu_set_id, slot_id, price, amount_paid, note)
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
          returning id`,
-        [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid],
+        [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid, note],
       );
       const full = await query<OrderRow>(`${ORDER_SELECT} where oi.id = $1`, [rows[0].id]);
       const after = (await attachAddons(query, [serializeOrder(full[0])]))[0];

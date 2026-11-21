@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { priceTierCounts } from "@/lib/orders";
+import { ordersMatchingTier, priceTierCounts } from "@/lib/orders";
 
 type AddonItem = {
   dish_name: string;
@@ -22,6 +22,7 @@ type OrderItem = {
   remaining: number;
   paid_in_full: boolean;
   picked_up: boolean;
+  note?: string;
   addons?: AddonItem[];
 };
 
@@ -41,6 +42,7 @@ function typeLabel(type: string): string {
 export default function FloorPage() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  const [tier, setTier] = useState<string | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [role, setRole] = useState<Role | null>(null);
   const [error, setError] = useState("");
@@ -99,6 +101,7 @@ export default function FloorPage() {
   }, [selected]);
 
   const tiers = useMemo(() => priceTierCounts(orders), [orders]);
+  const visibleOrders = useMemo(() => ordersMatchingTier(orders, tier), [orders, tier]);
   const dates = useMemo(
     () => [...new Set(slots.map((slot) => slot.service_date))].sort(),
     [slots],
@@ -106,6 +109,7 @@ export default function FloorPage() {
   const canPick = role === "admin" || role === "pickup";
 
   function toggle(id: string) {
+    setTier(null);
     setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
   }
 
@@ -177,6 +181,9 @@ export default function FloorPage() {
       {selected.length > 0 && orders.length === 0 && !pending ? (
         <p style={styles.note}>這些時段還沒有客人。</p>
       ) : null}
+      {orders.length > 0 && visibleOrders.length === 0 ? (
+        <p style={styles.note}>這個年菜價格沒有客人。</p>
+      ) : null}
       {tiers.length > 0 ? (
         <section style={styles.card}>
           <h2 style={styles.h2}>年菜價格</h2>
@@ -198,9 +205,25 @@ export default function FloorPage() {
               ))}
             </tbody>
           </table>
+          <div style={styles.slots}>
+            <button type="button" aria-pressed={tier === null} style={tier === null ? styles.slotOn : styles.slot} onClick={() => setTier(null)}>
+              全部
+            </button>
+            {tiers.map((row) => (
+              <button
+                key={row.name}
+                type="button"
+                aria-pressed={tier === row.name}
+                style={tier === row.name ? styles.slotOn : styles.slot}
+                onClick={() => setTier(row.name)}
+              >
+                {row.name}
+              </button>
+            ))}
+          </div>
         </section>
       ) : null}
-      {orders.map((order) => (
+      {visibleOrders.map((order) => (
         <article key={order.id} style={styles.card}>
           <h2 style={styles.name}>{order.customer_name}</h2>
           <p style={styles.meta}>
@@ -211,6 +234,7 @@ export default function FloorPage() {
             </span>
           </p>
           <p style={styles.meta}>年菜價格 {order.menu_set_name ?? "未選套餐"}</p>
+          {order.note ? <p style={styles.meta}>備註 {order.note}</p> : null}
           <p style={styles.money}>
             已收 {order.amount_paid}
             <span style={styles.remain}>剩餘 {order.paid_in_full ? "已付清" : order.remaining}</span>
