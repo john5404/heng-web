@@ -3,7 +3,7 @@ import { requireUser, type User } from "@/lib/auth";
 import { withTransaction, type SqlFn } from "@/lib/db";
 import {
   ADDON_SELECT,
-  attachAddons,
+  attachOrderDetails,
   ORDER_SELECT,
   serializeAddon,
   serializeOrder,
@@ -87,7 +87,7 @@ async function loadOrder(query: SqlFn, id: string): Promise<OrderJson | null> {
     [id],
   );
   if (!rows[0]) return null;
-  const [order] = await attachAddons(query, [serializeOrder(rows[0])]);
+  const [order] = await attachOrderDetails(query, [serializeOrder(rows[0])]);
   return order;
 }
 

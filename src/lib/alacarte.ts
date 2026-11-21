@@ -83,3 +83,24 @@ export function addonLineText(addon: { dish_name: string; quantity?: number; pri
   const quantity = addon.quantity && addon.quantity > 0 ? addon.quantity : 1;
   return `加購 ${addon.dish_name} ×${quantity} 售價 ${addon.price}`;
 }
+
+export function setDishLineText(line: { dish_name: string; quantity?: number; price: number }): string {
+  const quantity = line.quantity && line.quantity > 0 ? line.quantity : 1;
+  return `套餐 ${line.dish_name} ×${quantity} 售價 ${line.price}`;
+}
+
+export type TypedDish =
+  | { kind: "empty" }
+  | { kind: "known"; dish: AlacarteDish }
+  | { kind: "custom"; name: string };
+
+/** Exact name, or the only dish whose name contains the text, fills in. Anything else is a new dish. */
+export function resolveTypedDish(dishes: AlacarteDish[], query: string): TypedDish {
+  const name = query.trim();
+  if (!name) return { kind: "empty" };
+  const exact = dishes.find((dish) => dish.name === name);
+  if (exact) return { kind: "known", dish: exact };
+  const hits = dishes.filter((dish) => dish.name.includes(name));
+  if (hits.length === 1) return { kind: "known", dish: hits[0] };
+  return { kind: "custom", name };
+}

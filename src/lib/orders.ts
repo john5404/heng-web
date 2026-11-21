@@ -52,6 +52,13 @@ export type AddonJson = {
   quantity: number;
 };
 
+export type SetDishJson = {
+  dish_id: string;
+  dish_name: string;
+  quantity: number;
+  price: number;
+};
+
 export type OrderJson = {
   id: string;
   customer_name: string;
@@ -71,6 +78,7 @@ export type OrderJson = {
   picked_up: boolean;
   note: string;
   addons: AddonJson[];
+  set_dishes: SetDishJson[];
 };
 
 export const ORDER_SELECT = `select oi.id, oi.customer_name, oi.phone, oi.service_type,
@@ -124,6 +132,46 @@ export async function attachAddons(query: SqlFn, orders: OrderJson[]): Promise<O
   return orders.map((order) => ({ ...order, addons: grouped.get(order.id) ?? [] }));
 }
 
+type SetDishRow = {
+  order_item_id: string;
+  dish_id: string;
+  dish_name: string;
+  price: number | string;
+};
+
+/** Set-dish prices are display charges. Kitchen totals still come from set_dishes quantity. */
+export async function attachSetDishes(query: SqlFn, orders: OrderJson[]): Promise<OrderJson[]> {
+  if (orders.length === 0) return orders;
+  const placeholders = orders.map((_, index) => `$${index + 1}`).join(", ");
+  const rows = await query<SetDishRow>(
+    `select oi.id as order_item_id, d.id as dish_id, d.name as dish_name,
+            coalesce(p.price, 0) as price
+     from order_items oi
+     join set_dishes sd on sd.menu_set_id = oi.menu_set_id
+     join dishes d on d.id = sd.dish_id
+     left join order_set_dish_prices p on p.order_item_id = oi.id and p.dish_id = d.id
+     where oi.id in (${placeholders})
+     order by sd.sort_order, d.name`,
+    orders.map((order) => order.id),
+  );
+  const grouped = new Map<string, SetDishJson[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.order_item_id) ?? [];
+    list.push({
+      dish_id: row.dish_id,
+      dish_name: row.dish_name,
+      quantity: 1,
+      price: Number(row.price),
+    });
+    grouped.set(row.order_item_id, list);
+  }
+  return orders.map((order) => ({ ...order, set_dishes: grouped.get(order.id) ?? [] }));
+}
+
+export async function attachOrderDetails(query: SqlFn, orders: OrderJson[]): Promise<OrderJson[]> {
+  return attachSetDishes(query, await attachAddons(query, orders));
+}
+
 export function serializeOrder(row: OrderRow): OrderJson {
   const price = Number(row.price);
   const amountPaid = Number(row.amount_paid);
@@ -146,6 +194,7 @@ export function serializeOrder(row: OrderRow): OrderJson {
     picked_up: Boolean(row.picked_up),
     note: row.note ?? "",
     addons: [],
+    set_dishes: [],
   };
 }
 

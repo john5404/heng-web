@@ -4,7 +4,7 @@ import { requireRole, requireUser, type User } from "@/lib/auth";
 import { sql, withTransaction, type SqlFn } from "@/lib/db";
 import {
   ADDON_SELECT,
-  attachAddons,
+  attachOrderDetails,
   defaultAmountPaid,
   nameSearchPattern,
   ORDER_SELECT,
@@ -29,9 +29,13 @@ type Body = {
   dish_id?: unknown;
   note?: unknown;
   alacarte?: unknown;
+  set_dishes?: unknown;
 };
 
-type AlacarteLine = { dish_id: string; quantity: number };
+type AlacarteLine = { dish_id?: string; name?: string; quantity: number; price?: number };
+type SetDishPriceLine = { dish_id: string; price: number };
+
+const DISH_NAME_MAX = 80;
 
 function isResponse(value: unknown): value is Response {
   return value instanceof Response;
@@ -77,15 +81,31 @@ function asServiceType(value: unknown): "takeout" | "dine_in" | undefined {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+function parseMoney(value: unknown): number | undefined | Response {
+  if (value === undefined || value === null || value === "") return undefined;
+  const price = asInt(value);
+  if (price === undefined || price < 0) {
+    return Response.json({ error: "售價須為非負整數" }, { status: 400 });
+  }
+  return price;
+}
+
 function parseAlacarte(value: unknown): AlacarteLine[] | Response {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) return Response.json({ error: "單點格式不正確" }, { status: 400 });
-  const merged = new Map<string, number>();
+  const lines: AlacarteLine[] = [];
   for (const item of value) {
     if (!item || typeof item !== "object") return Response.json({ error: "單點格式不正確" }, { status: 400 });
-    const record = item as { dish_id?: unknown; quantity?: unknown };
+    const record = item as { dish_id?: unknown; name?: unknown; quantity?: unknown; price?: unknown };
     const dishId = asString(record.dish_id);
-    if (!dishId || !UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    const name = asString(record.name);
+    if (dishId) {
+      if (!UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    } else if (!name) {
+      return Response.json({ error: "菜名必填" }, { status: 400 });
+    } else if (name.length > DISH_NAME_MAX) {
+      return Response.json({ error: "菜名最多 80 字" }, { status: 400 });
+    }
     let quantity = 1;
     if (record.quantity !== undefined && record.quantity !== null && record.quantity !== "") {
       const parsed = asInt(record.quantity);
@@ -94,9 +114,47 @@ function parseAlacarte(value: unknown): AlacarteLine[] | Response {
       }
       quantity = parsed;
     }
-    merged.set(dishId, (merged.get(dishId) ?? 0) + quantity);
+    const price = parseMoney(record.price);
+    if (price instanceof Response) return price;
+    lines.push({
+      ...(dishId ? { dish_id: dishId } : { name }),
+      quantity,
+      ...(price === undefined ? {} : { price }),
+    });
   }
-  return [...merged.entries()].map(([dish_id, quantity]) => ({ dish_id, quantity }));
+  return lines;
+}
+
+function parseSetDishPrices(value: unknown): SetDishPriceLine[] | Response {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return Response.json({ error: "套餐菜色格式不正確" }, { status: 400 });
+  const merged = new Map<string, number>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") return Response.json({ error: "套餐菜色格式不正確" }, { status: 400 });
+    const record = item as { dish_id?: unknown; price?: unknown };
+    const dishId = asString(record.dish_id);
+    if (!dishId || !UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    const price = parseMoney(record.price);
+    if (price instanceof Response) return price;
+    merged.set(dishId, price ?? 0);
+  }
+  return [...merged.entries()].map(([dish_id, price]) => ({ dish_id, price }));
+}
+
+async function prepareSetDishPrices(
+  query: SqlFn,
+  menuSetId: string,
+  lines: SetDishPriceLine[],
+): Promise<SetDishPriceLine[] | Response> {
+  if (lines.length === 0) return [];
+  const rows = await query<{ dish_id: string }>("select dish_id from set_dishes where menu_set_id = $1", [
+    menuSetId,
+  ]);
+  const allowed = new Set(rows.map((row) => row.dish_id));
+  for (const line of lines) {
+    if (!allowed.has(line.dish_id)) return Response.json({ error: "菜色不在套餐內" }, { status: 400 });
+  }
+  return lines;
 }
 
 async function prepareAlacarte(
@@ -116,11 +174,54 @@ async function prepareAlacarte(
     grouped.set(row.id, set);
   }
   const sets = [...grouped.values()];
-  const prepared: { dish_id: string; quantity: number; price: number; amount_paid: number }[] = [];
+  const dishes = await query<{ id: string; name: string }>("select id, name from dishes");
+  const byId = new Map(dishes.map((dish) => [dish.id, dish.name]));
+  const byName = new Map(dishes.map((dish) => [dish.name, dish.id]));
+  const pendingNames: string[] = [];
+  const resolved: { key: string; quantity: number; price?: number; fresh: boolean }[] = [];
   for (const line of lines) {
-    const found = await query<{ id: string }>("select id from dishes where id = $1", [line.dish_id]);
-    if (!found[0]) return Response.json({ error: "找不到菜色" }, { status: 400 });
-    const price = linePrice(unitPriceForDish(line.dish_id, sets), line.quantity);
+    if (line.dish_id) {
+      if (!byId.has(line.dish_id)) return Response.json({ error: "找不到菜色" }, { status: 400 });
+      resolved.push({ key: line.dish_id, quantity: line.quantity, price: line.price, fresh: false });
+      continue;
+    }
+    const name = line.name ?? "";
+    const existingId = byName.get(name);
+    if (existingId) {
+      resolved.push({ key: existingId, quantity: line.quantity, price: line.price, fresh: false });
+      continue;
+    }
+    if (!pendingNames.includes(name)) pendingNames.push(name);
+    resolved.push({ key: name, quantity: line.quantity, price: line.price, fresh: true });
+  }
+  for (const name of pendingNames) {
+    const inserted = await query<{ id: string }>(
+      "insert into dishes (name) values ($1) on conflict (name) do nothing returning id",
+      [name],
+    );
+    const id =
+      inserted[0]?.id ??
+      (await query<{ id: string }>("select id from dishes where name = $1", [name]))[0]?.id;
+    if (!id) throw new Error("無法新增菜色");
+    byName.set(name, id);
+  }
+  const merged = new Map<string, { dish_id: string; quantity: number; price?: number; fresh: boolean }>();
+  for (const line of resolved) {
+    const dishId = line.fresh ? byName.get(line.key) : line.key;
+    if (!dishId) throw new Error("無法新增菜色");
+    const prev = merged.get(dishId);
+    if (!prev) {
+      merged.set(dishId, { dish_id: dishId, quantity: line.quantity, price: line.price, fresh: line.fresh });
+      continue;
+    }
+    prev.quantity += line.quantity;
+    if (line.price !== undefined) prev.price = line.price;
+    prev.fresh = prev.fresh && line.fresh;
+  }
+  const prepared: { dish_id: string; quantity: number; price: number; amount_paid: number }[] = [];
+  for (const line of merged.values()) {
+    const unit = line.fresh ? 0 : unitPriceForDish(line.dish_id, sets);
+    const price = line.price !== undefined ? line.price : linePrice(unit, line.quantity);
     prepared.push({
       dish_id: line.dish_id,
       quantity: line.quantity,
@@ -191,7 +292,7 @@ export async function GET(request: Request): Promise<Response> {
      order by oi.created_at, oi.id`,
     params,
   );
-  const orders = await attachAddons(sql, rows.map(serializeOrder));
+  const orders = await attachOrderDetails(sql, rows.map(serializeOrder));
   return Response.json({ orders, role: user.role });
 }
 
@@ -296,6 +397,8 @@ export async function POST(request: Request): Promise<Response> {
   const note = parsedNote ?? "";
   const alacarte = parseAlacarte(body.alacarte);
   if (alacarte instanceof Response) return alacarte;
+  const setDishPrices = parseSetDishPrices(body.set_dishes);
+  if (setDishPrices instanceof Response) return setDishPrices;
   const requestedPaid = explicitAmount(body.amount_paid);
   if (isResponse(requestedPaid)) return requestedPaid;
 
@@ -311,6 +414,8 @@ export async function POST(request: Request): Promise<Response> {
       }
       const price = await resolvePrice(body.price, menuSetId, query);
       if (isResponse(price)) return price;
+      const pricedSetDishes = await prepareSetDishPrices(query, menuSetId, setDishPrices);
+      if (pricedSetDishes instanceof Response) return pricedSetDishes;
       const portions = await prepareAlacarte(query, alacarte);
       if (portions instanceof Response) return portions;
       const amountPaid = requestedPaid ?? defaultAmountPaid(price);
@@ -328,8 +433,15 @@ export async function POST(request: Request): Promise<Response> {
           [rows[0].id, portion.dish_id, portion.price, portion.amount_paid, portion.quantity],
         );
       }
+      for (const line of pricedSetDishes) {
+        await query(
+          `insert into order_set_dish_prices (order_item_id, dish_id, price)
+           values ($1, $2, $3)`,
+          [rows[0].id, line.dish_id, line.price],
+        );
+      }
       const full = await query<OrderRow>(`${ORDER_SELECT} where oi.id = $1`, [rows[0].id]);
-      const after = (await attachAddons(query, [serializeOrder(full[0])]))[0];
+      const after = (await attachOrderDetails(query, [serializeOrder(full[0])]))[0];
       await writeAudit(
         {
           userId: admin.id,

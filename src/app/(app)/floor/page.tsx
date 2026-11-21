@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { addonLineText } from "@/lib/alacarte";
+import { addonLineText, setDishLineText } from "@/lib/alacarte";
 import { ordersMatchingTier, priceTierCounts } from "@/lib/orders";
 
 type AddonItem = {
@@ -10,6 +10,13 @@ type AddonItem = {
   quantity: number;
   price: number;
   picked_up: boolean;
+};
+
+type SetDishLine = {
+  dish_id: string;
+  dish_name: string;
+  quantity: number;
+  price: number;
 };
 
 type OrderItem = {
@@ -28,6 +35,7 @@ type OrderItem = {
   picked_up: boolean;
   note?: string;
   addons?: AddonItem[];
+  set_dishes?: SetDishLine[];
 };
 
 type Role = "admin" | "pickup" | "viewer";
@@ -254,6 +262,11 @@ export default function FloorPage() {
               {order.picked_up ? "已領取" : "領取"}
             </button>
           ) : null}
+          {(order.set_dishes ?? []).map((line) => (
+            <p key={line.dish_id} style={styles.note}>
+              {setDishLineText(line)}
+            </p>
+          ))}
           {(order.addons ?? []).map((addon) => (
             <p key={addon.id} style={styles.note}>
               {addonLineText(addon)}

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { GET, POST } from "../src/app/api/orders/route";
-import { alacarteMenu, addonLineText, linePrice, registerSetChoices } from "../src/lib/alacarte";
+import {
+  alacarteMenu,
+  addonLineText,
+  linePrice,
+  registerSetChoices,
+  resolveTypedDish,
+  setDishLineText,
+} from "../src/lib/alacarte";
 import { createSession, hashPassword, SESSION_COOKIE } from "../src/lib/auth";
 import { sql } from "../src/lib/db";
 import { dishTotalsForSlot } from "../src/lib/kitchen";
@@ -10,7 +17,14 @@ const SOUP = "上湯魚翅羹";
 const DATE = "2027-03-02";
 
 type Addon = { dish_name: string; quantity: number; price: number; amount_paid: number };
-type Order = { id: string; addons: Addon[]; menu_set_name: string | null };
+type SetDish = { dish_name: string; quantity: number; price: number };
+type Order = {
+  id: string;
+  price: number;
+  addons: Addon[];
+  set_dishes: SetDish[];
+  menu_set_name: string | null;
+};
 
 async function adminCookie(): Promise<string> {
   const existing = await sql<{ id: string }>("select id from users where username = $1", ["admin"]);
@@ -79,6 +93,20 @@ describe("單點 menu", () => {
     expect(linePrice(1700, 2)).toBe(3400);
     expect(addonLineText({ dish_name: SHRIMP, quantity: 2, price: 0 })).toBe(`加購 ${SHRIMP} ×2 售價 0`);
     expect(addonLineText({ dish_name: SOUP, quantity: 1, price: 1700 })).toBe(`加購 ${SOUP} ×1 售價 1700`);
+    expect(setDishLineText({ dish_name: SHRIMP, quantity: 1, price: 250 })).toBe(`套餐 ${SHRIMP} ×1 售價 250`);
+  });
+
+  it("fills a known dish from a typed name and keeps an unknown name", () => {
+    const dishes = [
+      { id: "1", name: SOUP, unitPrice: 1700 },
+      { id: "2", name: SHRIMP, unitPrice: 0 },
+      { id: "3", name: "白灼蝦", unitPrice: 0 },
+    ];
+    expect(resolveTypedDish(dishes, "  ")).toEqual({ kind: "empty" });
+    expect(resolveTypedDish(dishes, ` ${SOUP} `)).toEqual({ kind: "known", dish: dishes[0] });
+    expect(resolveTypedDish(dishes, "魚翅")).toEqual({ kind: "known", dish: dishes[0] });
+    expect(resolveTypedDish(dishes, "蝦")).toEqual({ kind: "custom", name: "蝦" });
+    expect(resolveTypedDish(dishes, "手工拼盤")).toEqual({ kind: "custom", name: "手工拼盤" });
   });
 
   it("adds à-la-carte portions onto a set and counts them in that slot", async () => {
@@ -113,14 +141,14 @@ describe("單點 menu", () => {
     expect(order.menu_set_name).toBe("八千套餐");
     const shrimpLine = order.addons.find((addon) => addon.dish_name === SHRIMP);
     const soupLine = order.addons.find((addon) => addon.dish_name === SOUP);
-    expect(shrimpLine).toMatchObject({ quantity: 2, price: 0, amount_paid: 0 });
+    expect(shrimpLine).toMatchObject({ quantity: 2, price: 9999, amount_paid: 2000 });
     expect(soupLine).toMatchObject({ quantity: 2, price: 3400, amount_paid: 2000 });
 
     const listed = await GET(request("GET", cookie, "http://localhost/api/orders?q=單點加套餐"));
     const found = ((await listed.json()) as { orders: Order[] }).orders.find((item) => item.id === order.id);
     expect(found?.addons.find((addon) => addon.dish_name === SHRIMP)?.quantity).toBe(2);
     expect(addonLineText(found!.addons.find((addon) => addon.dish_name === SHRIMP)!)).toBe(
-      `加購 ${SHRIMP} ×2 售價 0`,
+      `加購 ${SHRIMP} ×2 售價 9999`,
     );
 
     const totals = await dishTotalsForSlot(DATE, slot);
@@ -173,5 +201,111 @@ describe("單點 menu", () => {
       "select id from order_items where customer_name in ('單點壞數量', '單點壞電話')",
     );
     expect(stored).toEqual([]);
+  });
+
+  it("charges an edited set-dish price and a typed dish without changing kitchen quantities", async () => {
+    const cookie = await adminCookie();
+    const slot = await sql<{ id: string }>(
+      `insert into day_slots (service_date, service_type, label, start_time, end_time)
+       values ($1, 'takeout', '改價測試時段', '14:00', '14:30')
+       returning id`,
+      [DATE],
+    );
+    const eight = await sql<{ id: string }>("select id from menu_sets where name = $1", ["八千套餐"]);
+    const shrimp = await sql<{ id: string }>("select id from dishes where name = $1", [SHRIMP]);
+    const outside = await sql<{ id: string }>(
+      `select d.id from dishes d
+       where not exists (
+         select 1 from set_dishes sd where sd.menu_set_id = $1 and sd.dish_id = d.id
+       )
+       limit 1`,
+      [eight[0].id],
+    );
+
+    const created = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "改價客人",
+        phone: "0912555011",
+        service_type: "takeout",
+        menu_set_id: eight[0].id,
+        slot_id: slot[0].id,
+        set_dishes: [{ dish_id: shrimp[0].id, price: 250 }],
+        alacarte: [
+          { name: SOUP, quantity: 1 },
+          { name: "臨時小菜", quantity: 2 },
+          { name: "臨時甜點", quantity: 1, price: 45 },
+        ],
+      }),
+    );
+    expect(created.status).toBe(201);
+    const order = (await created.json()) as Order;
+    expect(order.price).toBe(8000);
+    expect(order.menu_set_name).toBe("八千套餐");
+    const shrimpSet = order.set_dishes.find((line) => line.dish_name === SHRIMP);
+    expect(shrimpSet).toMatchObject({ quantity: 1, price: 250 });
+    expect(order.set_dishes.every((line) => line.quantity === 1)).toBe(true);
+    expect(order.set_dishes.filter((line) => line.dish_name !== SHRIMP).every((line) => line.price === 0)).toBe(true);
+    expect(setDishLineText(shrimpSet!)).toBe(`套餐 ${SHRIMP} ×1 售價 250`);
+    expect(order.addons.find((addon) => addon.dish_name === SOUP)).toMatchObject({
+      quantity: 1,
+      price: 1700,
+      amount_paid: 1700,
+    });
+    expect(order.addons.find((addon) => addon.dish_name === "臨時小菜")).toMatchObject({
+      quantity: 2,
+      price: 0,
+      amount_paid: 0,
+    });
+    expect(order.addons.find((addon) => addon.dish_name === "臨時甜點")).toMatchObject({
+      quantity: 1,
+      price: 45,
+      amount_paid: 45,
+    });
+
+    const listed = await GET(request("GET", cookie, "http://localhost/api/orders?q=改價客人"));
+    const found = ((await listed.json()) as { orders: Order[] }).orders.find((item) => item.id === order.id);
+    expect(found?.set_dishes.find((line) => line.dish_name === SHRIMP)?.price).toBe(250);
+    expect(found?.addons.find((addon) => addon.dish_name === "臨時小菜")?.price).toBe(0);
+
+    const totals = await dishTotalsForSlot(DATE, slot[0].id);
+    const qty = (name: string) => totals.find((row) => row.dishName === name)?.qty ?? 0;
+    const soupInSet = order.set_dishes.some((line) => line.dish_name === SOUP);
+    expect(qty(SHRIMP)).toBe(1);
+    expect(qty(SOUP)).toBe((soupInSet ? 1 : 0) + 1);
+    expect(qty("臨時小菜")).toBe(2);
+    expect(qty("臨時甜點")).toBe(1);
+    const onASet = await sql<{ n: string }>(
+      "select count(*)::text as n from set_dishes sd join dishes d on d.id = sd.dish_id where d.name = $1",
+      ["臨時小菜"],
+    );
+    expect(onASet[0].n).toBe("0");
+
+    const rejected = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "菜不在套餐",
+        phone: "0912555012",
+        service_type: "takeout",
+        menu_set_id: eight[0].id,
+        slot_id: slot[0].id,
+        set_dishes: [{ dish_id: outside[0].id, price: 10 }],
+      }),
+    );
+    expect(rejected.status).toBe(400);
+    const negative = await POST(
+      request("POST", cookie, "http://localhost/api/orders", {
+        customer_name: "負售價",
+        phone: "0912555013",
+        service_type: "takeout",
+        menu_set_id: eight[0].id,
+        slot_id: slot[0].id,
+        alacarte: [{ name: "臨時小菜", quantity: 1, price: -1 }],
+      }),
+    );
+    expect(negative.status).toBe(400);
+    const stored = await sql<{ id: string }>(
+      "select id from order_items where customer_name in ('菜不在套餐', '負售價')",
+    );
+    expect(stored).toEqual([]);
+    expect(qty(SHRIMP)).toBe(1);
   });
 });

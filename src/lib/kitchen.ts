@@ -14,6 +14,7 @@ export const PREP_NOTE = "備料總量＝該時段有效訂單菜量";
  * follows what was ordered. Soft-deleted orders and addons are left out.
  * Set dishes are read from live set_dishes, so a menu edit recalculates totals.
  * Addons add their quantity of that dish on top of the set.
+ * Edited prices are charges only and are not counted here.
  */
 export async function dishTotalsForSlot(date: string, slotId: string): Promise<DishTotal[]> {
   const setRows = await sql<{ dish_name: string; qty: number | string }>(

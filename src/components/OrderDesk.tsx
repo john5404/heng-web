@@ -2,7 +2,7 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState, type CSSProperties } from "react";
 import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
-import { alacarteMenu, addonLineText, registerSetChoices } from "@/lib/alacarte";
+import { alacarteMenu, addonLineText, registerSetChoices, resolveTypedDish, setDishLineText } from "@/lib/alacarte";
 import { phonePopupOn } from "@/lib/phone";
 
 type AddonItem = {
@@ -16,6 +16,15 @@ type AddonItem = {
   paid_in_full: boolean;
   picked_up: boolean;
 };
+
+type SetDishLine = {
+  dish_id: string;
+  dish_name: string;
+  quantity: number;
+  price: number;
+};
+
+type CustomLine = { name: string; quantity: number; price: string };
 
 type OrderItem = {
   id: string;
@@ -34,7 +43,15 @@ type OrderItem = {
   picked_up: boolean;
   note: string;
   addons?: AddonItem[];
+  set_dishes?: SetDishLine[];
 };
+
+function chargeOrDefault(text: string | undefined, fallback: number): number {
+  if (text === undefined) return fallback;
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return fallback;
+  return Number(trimmed);
+}
 
 type Role = "admin" | "pickup" | "viewer";
 
@@ -59,6 +76,10 @@ export default function OrderDesk() {
   const [sets, setSets] = useState<MenuSet[]>([]);
   const [catalog, setCatalog] = useState<CatalogDish[]>([]);
   const [qtyByDish, setQtyByDish] = useState<Record<string, number>>({});
+  const [linePrice, setLinePrice] = useState<Record<string, string>>({});
+  const [setDishPrice, setSetDishPrice] = useState<Record<string, string>>({});
+  const [customLines, setCustomLines] = useState<CustomLine[]>([]);
+  const [dishDraft, setDishDraft] = useState("");
   const [slots, setSlots] = useState<Slot[]>([]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -188,19 +209,70 @@ export default function OrderDesk() {
       note: form.note,
       ...(price === undefined ? {} : { price }),
       ...(chosenAlacarte.length > 0 ? { alacarte: chosenAlacarte } : {}),
+      ...(chosenSetPrices.length > 0 ? { set_dishes: chosenSetPrices } : {}),
     });
     if (!ok) return;
     const name = form.customer_name.trim();
     setQuery(name);
     setForm((prev) => ({ ...prev, customer_name: "", phone: "", price: "", note: "" }));
     setQtyByDish({});
+    setLinePrice({});
+    setSetDishPrice({});
+    setCustomLines([]);
+    setDishDraft("");
     await search(name);
   }
 
   const singleDishes = alacarteMenu(catalog, sets);
-  const chosenAlacarte = singleDishes
-    .filter((dish) => (qtyByDish[dish.id] ?? 0) >= 1)
-    .map((dish) => ({ dish_id: dish.id, quantity: qtyByDish[dish.id] }));
+  const selectedSet = sets.find((set) => set.id === form.menu_set_id);
+  const setDishes = [...(selectedSet?.dishes ?? [])].sort(
+    (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, "zh-Hant"),
+  );
+  const chosenAlacarte = [
+    ...singleDishes
+      .filter((dish) => (qtyByDish[dish.id] ?? 0) >= 1)
+      .map((dish) => ({
+        dish_id: dish.id,
+        quantity: qtyByDish[dish.id],
+        price: chargeOrDefault(linePrice[dish.id], dish.unitPrice * qtyByDish[dish.id]),
+      })),
+    ...customLines
+      .filter((line) => line.quantity >= 1 && line.name.trim() !== "")
+      .map((line) => ({
+        name: line.name.trim(),
+        quantity: line.quantity,
+        price: chargeOrDefault(line.price, 0),
+      })),
+  ];
+  const chosenSetPrices = setDishes.map((dish) => ({
+    dish_id: dish.id,
+    price: chargeOrDefault(setDishPrice[dish.id], 0),
+  }));
+
+  function addTypedDish() {
+    const match = resolveTypedDish(singleDishes, dishDraft);
+    if (match.kind === "empty") return;
+    if (match.kind === "known") {
+      const nextQty = Math.max(qtyByDish[match.dish.id] ?? 0, 1);
+      setDishQty(match.dish.id, nextQty);
+      setLinePrice((prev) => ({
+        ...prev,
+        [match.dish.id]: String(match.dish.unitPrice * nextQty),
+      }));
+      setDishDraft("");
+      return;
+    }
+    setCustomLines((prev) => {
+      const existing = prev.find((line) => line.name === match.name);
+      if (existing) {
+        return prev.map((line) =>
+          line.name === match.name ? { ...line, quantity: line.quantity + 1 } : line,
+        );
+      }
+      return [...prev, { name: match.name, quantity: 1, price: "0" }];
+    });
+    setDishDraft("");
+  }
 
   function setDishQty(dishId: string, raw: number) {
     const quantity = Number.isFinite(raw) ? Math.max(0, Math.trunc(raw)) : 0;
@@ -225,6 +297,7 @@ export default function OrderDesk() {
       menu_set_id: menuSetId,
       price: set ? String(set.price) : "",
     }));
+    setSetDishPrice({});
   }
 
   function onServiceType(serviceType: "takeout" | "dine_in") {
@@ -268,7 +341,7 @@ export default function OrderDesk() {
       <section style={styles.card}>
         <h2 style={styles.h2}>新增項目</h2>
         <p style={styles.note}>
-          已收預設 2000；售價低於 2000 則預設收滿。上湯魚翅羹在單點清單，沿用既有單份價格，數量可改。加在既有項目上時，訂金與領取各自計算。單點選了之後數量是 1，沒有單價的菜這一列售價是 0。
+          已收預設 2000；售價低於 2000 則預設收滿。上湯魚翅羹在單點清單，單份 1700，數量可改。每一列售價可以改，改過的數字就是這一列的收費，外場也顯示這個數字。廚房仍依菜名與數量備料。輸入菜名可加入：選單裡的菜會帶出名稱與目前單價，不在菜單上的菜也能加，售價先是 0。套餐裡的菜每一份售價先是 0。加在既有項目上時，訂金與領取各自計算。
         </p>
         <form
           onSubmit={onCreate}
@@ -345,12 +418,131 @@ export default function OrderDesk() {
           </label>
           <div style={styles.alacarte}>
             <h3 style={styles.h2}>單點</h3>
+            {setDishes.length > 0 ? (
+              <div style={styles.alacarte}>
+                <h3 style={styles.h2}>套餐菜色</h3>
+                {setDishes.map((dish) => (
+                  <div key={dish.id} style={styles.alacarteRow}>
+                    <span style={styles.alacarteName}>{dish.name}</span>
+                    <span>×1</span>
+                    <label style={styles.inlineLabel}>
+                      售價
+                      <input
+                        aria-label={`${dish.name} 售價`}
+                        inputMode="numeric"
+                        value={setDishPrice[dish.id] ?? "0"}
+                        onChange={(e) =>
+                          setSetDishPrice((prev) => ({ ...prev, [dish.id]: e.target.value }))
+                        }
+                        style={styles.price}
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <div style={styles.alacarteRow}>
+              <label style={styles.field}>
+                加菜
+                <input
+                  aria-label="加菜"
+                  value={dishDraft}
+                  list="known-dishes"
+                  placeholder="輸入菜名"
+                  onChange={(e) => setDishDraft(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    addTypedDish();
+                  }}
+                  style={styles.input}
+                />
+              </label>
+              <datalist id="known-dishes">
+                {singleDishes.map((dish) => (
+                  <option key={dish.id} value={dish.name}>{`單價 ${dish.unitPrice}`}</option>
+                ))}
+              </datalist>
+              <button type="button" style={styles.button} onClick={addTypedDish}>
+                加入
+              </button>
+            </div>
+            {customLines.map((line) => (
+              <div key={line.name} style={styles.alacarteRow}>
+                <span style={styles.alacarteName}>{line.name}</span>
+                <button
+                  type="button"
+                  style={styles.button}
+                  aria-label={`${line.name} 減少`}
+                  onClick={() =>
+                    setCustomLines((prev) =>
+                      prev.flatMap((item) => {
+                        if (item.name !== line.name) return [item];
+                        if (item.quantity <= 1) return [];
+                        return [{ ...item, quantity: item.quantity - 1 }];
+                      }),
+                    )
+                  }
+                >
+                  −
+                </button>
+                <input
+                  aria-label={`${line.name} 數量`}
+                  inputMode="numeric"
+                  value={String(line.quantity)}
+                  onChange={(e) => {
+                    const text = e.target.value.trim();
+                    const quantity = text === "" ? 0 : Number(text);
+                    setCustomLines((prev) =>
+                      prev.flatMap((item) => {
+                        if (item.name !== line.name) return [item];
+                        if (!Number.isFinite(quantity) || quantity < 1) return [];
+                        return [{ ...item, quantity: Math.trunc(quantity) }];
+                      }),
+                    );
+                  }}
+                  style={styles.qty}
+                />
+                <button
+                  type="button"
+                  style={styles.button}
+                  aria-label={`${line.name} 增加`}
+                  onClick={() =>
+                    setCustomLines((prev) =>
+                      prev.map((item) =>
+                        item.name === line.name ? { ...item, quantity: item.quantity + 1 } : item,
+                      ),
+                    )
+                  }
+                >
+                  ＋
+                </button>
+                <label style={styles.inlineLabel}>
+                  售價
+                  <input
+                    aria-label={`${line.name} 售價`}
+                    inputMode="numeric"
+                    value={line.price}
+                    onChange={(e) =>
+                      setCustomLines((prev) =>
+                        prev.map((item) => (item.name === line.name ? { ...item, price: e.target.value } : item)),
+                      )
+                    }
+                    style={styles.price}
+                  />
+                </label>
+              </div>
+            ))}
             {singleDishes.map((dish) => {
               const quantity = qtyByDish[dish.id] ?? 0;
+              const shownPrice =
+                linePrice[dish.id] ??
+                (quantity >= 1 ? String(dish.unitPrice * quantity) : String(dish.unitPrice));
               return (
                 <div key={dish.id} style={styles.alacarteRow}>
                   <span style={styles.alacarteName}>{dish.name}</span>
-                  <span>單價 {dish.unitPrice}</span>
+                  <span>菜單單價 {dish.unitPrice}</span>
                   <button
                     type="button"
                     style={styles.button}
@@ -378,7 +570,16 @@ export default function OrderDesk() {
                   >
                     ＋
                   </button>
-                  {quantity >= 1 ? <span>這一列售價 {dish.unitPrice * quantity}</span> : null}
+                  <label style={styles.inlineLabel}>
+                    售價
+                    <input
+                      aria-label={`${dish.name} 售價`}
+                      inputMode="numeric"
+                      value={shownPrice}
+                      onChange={(e) => setLinePrice((prev) => ({ ...prev, [dish.id]: e.target.value }))}
+                      style={styles.price}
+                    />
+                  </label>
                 </div>
               );
             })}
@@ -495,6 +696,11 @@ export default function OrderDesk() {
               </button>
             ) : null}
           </div>
+          {(order.set_dishes ?? []).map((line) => (
+            <p key={line.dish_id} style={styles.meta}>
+              {setDishLineText(line)}
+            </p>
+          ))}
           {(order.addons ?? []).map((addon) => (
             <div key={addon.id} style={styles.addon}>
               <h3 style={styles.h2}>{addonLineText(addon)}</h3>
@@ -607,6 +813,8 @@ const styles: Record<string, CSSProperties> = {
   alacarteRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   alacarteName: { flex: "1 1 180px", fontWeight: 700 },
   qty: { width: 88, minHeight: 56, fontSize: 22, padding: "0 8px" },
+  price: { width: 120, minHeight: 56, fontSize: 22, padding: "0 8px" },
+  inlineLabel: { display: "flex", gap: 8, alignItems: "center" },
   picked: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px", background: "#146c43", color: "#fff" },
   danger: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
   meta: { display: "flex", gap: 12, alignItems: "center", margin: "6px 0", flexWrap: "wrap" },
