@@ -1,9 +1,10 @@
 import { writeAudit } from "@/lib/audit";
 import { requireRole, requireUser, type User } from "@/lib/auth";
 import { sql, withTransaction, type SqlFn } from "@/lib/db";
+import { SOUP_SET_NAME } from "@/lib/orders";
 
 type MenuSetRow = { id: string; name: string; price: number };
-type DishRow = { id: string; name: string };
+type DishRow = { id: string; name: string; alacarte_price?: number };
 type SetDishRow = {
   menu_set_id: string;
   dish_id: string;
@@ -55,8 +56,13 @@ export async function GET(request: Request): Promise<Response> {
   const user = await requireUser(request);
   if (isResponse(user)) return user;
 
-  const sets = await sql<MenuSetRow>("select id, name, price from menu_sets order by price desc, name");
-  const dishes = await sql<DishRow>("select id, name from dishes order by name");
+  const sets = await sql<MenuSetRow>(
+    "select id, name, price from menu_sets where name <> $1 order by price desc, name",
+    [SOUP_SET_NAME],
+  );
+  const dishes = (
+    await sql<DishRow>("select id, name, alacarte_price from dishes order by name")
+  ).map((dish) => ({ ...dish, alacarte_price: Number(dish.alacarte_price) }));
   const links = await sql<SetDishRow>(
     `select sd.menu_set_id, sd.dish_id, sd.sort_order, d.name as dish_name
      from set_dishes sd
@@ -104,11 +110,22 @@ export async function POST(request: Request): Promise<Response> {
   if (type === "dish") {
     const name = asString(body.name);
     if (!name) return Response.json({ error: "菜名必填" }, { status: 400 });
-    const existing = await sql<DishRow>("select id, name from dishes where name = $1", [name]);
+    let alacartePrice = 0;
+    if (body.price !== undefined && body.price !== null && body.price !== "") {
+      const parsed = asInt(body.price);
+      if (parsed === undefined || parsed < 0) {
+        return Response.json({ error: "單點價格須為非負整數" }, { status: 400 });
+      }
+      alacartePrice = parsed;
+    }
+    const existing = await sql<DishRow>("select id, name, alacarte_price from dishes where name = $1", [name]);
     if (existing[0]) {
       return Response.json({ error: "菜名已存在", dish: existing[0] }, { status: 409 });
     }
-    const rows = await sql<DishRow>("insert into dishes (name) values ($1) returning id, name", [name]);
+    const rows = await sql<DishRow>(
+      "insert into dishes (name, alacarte_price) values ($1, $2) returning id, name, alacarte_price",
+      [name, alacartePrice],
+    );
     await writeAudit({
       userId: admin.id,
       action: "create",
@@ -116,7 +133,7 @@ export async function POST(request: Request): Promise<Response> {
       entityId: rows[0].id,
       after: rows[0],
     });
-    return Response.json(rows[0], { status: 201 });
+    return Response.json({ ...rows[0], alacarte_price: Number(rows[0].alacarte_price) }, { status: 201 });
   }
 
   if (type === "set_dish") {
@@ -178,6 +195,34 @@ export async function PATCH(request: Request): Promise<Response> {
       after,
     });
     return Response.json(after);
+  }
+
+  if (type === "dish_price") {
+    const id = asString(body.id);
+    const price = asInt(body.alacarte_price);
+    if (!id || price === undefined || price < 0) {
+      return Response.json({ error: "單點價格須為非負整數" }, { status: 400 });
+    }
+    const before = (
+      await sql<DishRow>("select id, name, alacarte_price from dishes where id = $1", [id])
+    )[0];
+    if (!before) return Response.json({ error: "找不到菜項" }, { status: 404 });
+    const after = (
+      await sql<DishRow>(
+        "update dishes set alacarte_price = $1 where id = $2 returning id, name, alacarte_price",
+        [price, id],
+      )
+    )[0];
+    const saved = { ...after, alacarte_price: Number(after.alacarte_price) };
+    await writeAudit({
+      userId: admin.id,
+      action: "update",
+      entity: "dishes",
+      entityId: id,
+      before: { ...before, alacarte_price: Number(before.alacarte_price) },
+      after: saved,
+    });
+    return Response.json(saved);
   }
 
   if (type === "dish") {

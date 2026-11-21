@@ -94,13 +94,24 @@ describe("menu seed", () => {
     expect(wan.map((r) => r.name)[0]).toBe("烏魚子五福拚");
   });
 
-  it("seeds three sets plus a-la-carte shark-fin soup at 1700", async () => {
+  it("seeds three sets and keeps 上湯魚翅羹 as a dish priced at 1700", async () => {
     const sets = await sql<SetRow>("select id, name, price from menu_sets order by price desc, name");
     const byName = Object.fromEntries(sets.map((s) => [s.name, s]));
     expect(byName["萬元套餐"]?.price).toBe(10000);
     expect(byName["八千套餐"]?.price).toBe(8000);
     expect(byName["六千六套餐"]?.price).toBe(6600);
-    expect(byName["單點上湯魚翅羹"]?.price).toBe(1700);
+    expect(byName["單點上湯魚翅羹"]).toBeUndefined();
+    const soup = await sql<{ name: string; alacarte_price: number }>(
+      "select name, alacarte_price from dishes where name = $1",
+      ["上湯魚翅羹"],
+    );
+    expect(soup).toHaveLength(1);
+    expect(Number(soup[0].alacarte_price)).toBe(1700);
+    const shrimp = await sql<{ alacarte_price: number }>(
+      "select alacarte_price from dishes where name = $1",
+      ["白灼蒜味蝦"],
+    );
+    expect(Number(shrimp[0].alacarte_price)).toBe(0);
   });
 
   it("reuses one dishes row for shared names across sets", async () => {
@@ -134,7 +145,7 @@ describe("menu seed", () => {
        where sd.dish_id = $1 order by ms.name`,
       [soup[0].id],
     );
-    expect(soupSets.map((r) => r.n).sort()).toEqual(["八千套餐", "單點上湯魚翅羹"].sort());
+    expect(soupSets.map((r) => r.n)).toEqual(["八千套餐"]);
   });
 });
 
@@ -334,5 +345,34 @@ describe("menu settings API", () => {
       [set.id],
     );
     expect(still.map((r) => r.id)).toEqual(rows.map((r) => r.id));
+  });
+
+  it("saves a custom dish with a 單點 price and lets staff change that price", async () => {
+    const cookie = await adminCookie();
+    const created = await POST(request("POST", cookie, { type: "dish", name: "手工拼盤", price: 80 }));
+    expect(created.status).toBe(201);
+    const dish = (await created.json()) as { id: string; name: string; alacarte_price: number };
+    expect(dish).toMatchObject({ name: "手工拼盤", alacarte_price: 80 });
+
+    const listed = await GET(request("GET", cookie));
+    const body = (await listed.json()) as {
+      sets: { name: string }[];
+      dishes: { id: string; name: string; alacarte_price: number }[];
+    };
+    expect(body.sets.map((set) => set.name)).not.toContain("單點上湯魚翅羹");
+    expect(body.dishes.find((item) => item.name === "上湯魚翅羹")?.alacarte_price).toBe(1700);
+    expect(body.dishes.find((item) => item.name === "手工拼盤")?.alacarte_price).toBe(80);
+
+    const updated = await PATCH(
+      request("PATCH", cookie, { type: "dish_price", id: dish.id, alacarte_price: 120 }),
+    );
+    expect(updated.status).toBe(200);
+    expect(((await updated.json()) as { alacarte_price: number }).alacarte_price).toBe(120);
+    const negative = await PATCH(
+      request("PATCH", cookie, { type: "dish_price", id: dish.id, alacarte_price: -1 }),
+    );
+    expect(negative.status).toBe(400);
+    const soup = await sql<{ name: string }>("select name from dishes where name = $1", ["上湯魚翅羹"]);
+    expect(soup).toHaveLength(1);
   });
 });

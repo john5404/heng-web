@@ -218,15 +218,15 @@ describe("orders API", () => {
   it("rejects non-admin delete with 403 and keeps the row", async () => {
     const admin = await adminCookie();
     const slot = await slotId();
-    const soup = await menuSet("單點上湯魚翅羹");
+    const set = await menuSet("六千六套餐");
     const created = await POST(
       request("POST", admin, "http://localhost/api/orders", {
         customer_name: "不可刪",
         phone: "0912000444",
         service_type: "takeout",
-        menu_set_id: soup.id,
+        menu_set_id: set.id,
         slot_id: slot,
-        price: 1700,
+        price: 6600,
       }),
     );
     const order = (await created.json()) as OrderItem;
@@ -272,7 +272,7 @@ describe("orders API", () => {
     expect(orders.find((item) => item.id === order.id)).toBeUndefined();
   });
 
-  it("rejects a priced create that has no menu set", async () => {
+  it("rejects an order that has no set and no 單點", async () => {
     const cookie = await adminCookie();
     const slot = await slotId();
     const response = await POST(
@@ -286,6 +286,7 @@ describe("orders API", () => {
       }),
     );
     expect(response.status).toBe(400);
+    expect(((await response.json()) as { error?: string }).error).toBe("請至少加入一道單點");
     const stored = await sql<{ id: string }>(
       "select id from order_items where customer_name = $1",
       ["無級距"],

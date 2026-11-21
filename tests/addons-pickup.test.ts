@@ -303,12 +303,12 @@ describe("addons and pickup role", () => {
     const admin = await adminCookie();
     const pickup = await roleCookie("addon_pickup", "pickup");
     const slot = await slotId();
-    const sets = await sql<{ id: string; price: number }>(
-      "select id, price from menu_sets where name = $1",
-      ["單點上湯魚翅羹"],
-    );
-    expect(Number(sets[0].price)).toBe(1700);
     const mid = await menuSet("六千六套餐");
+    const soupPrice = await sql<{ alacarte_price: number }>(
+      "select alacarte_price from dishes where name = $1",
+      [SOUP],
+    );
+    expect(Number(soupPrice[0].alacarte_price)).toBe(1700);
     const soupDish = await sql<{ id: string }>("select id from dishes where name = $1", [SOUP]);
 
     const alone = await POST(
@@ -351,7 +351,7 @@ describe("addons and pickup role", () => {
         customer_name: "低價滿付",
         phone: "0912111444",
         service_type: "takeout",
-        menu_set_id: sets[0].id,
+        menu_set_id: mid.id,
         slot_id: slot,
         price: 1700,
       }),
@@ -365,7 +365,7 @@ describe("addons and pickup role", () => {
         customer_name: "明示超收",
         phone: "0912111555",
         service_type: "takeout",
-        menu_set_id: sets[0].id,
+        menu_set_id: mid.id,
         slot_id: slot,
         price: 1700,
         amount_paid: 2000,
