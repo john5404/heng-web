@@ -31,9 +31,21 @@ const FLYER_DISHES = [
 type SetRow = { id: string; name: string; price: number };
 type DishRow = { id: string; name: string };
 
-async function adminCookie(): Promise<string> {
+async function ensureAdminUser(): Promise<string> {
+  const existing = await sql<{ id: string }>("select id from users where username = $1", ["admin"]);
+  if (existing[0]) return existing[0].id;
+  const passwordHash = await hashPassword("temp-pass");
+  await sql("insert into users (username, password_hash, role) values ($1, $2, 'admin')", [
+    "admin",
+    passwordHash,
+  ]);
   const rows = await sql<{ id: string }>("select id from users where username = $1", ["admin"]);
-  return `${SESSION_COOKIE}=${createSession({ id: rows[0].id })}`;
+  return rows[0].id;
+}
+
+async function adminCookie(): Promise<string> {
+  const id = await ensureAdminUser();
+  return `${SESSION_COOKIE}=${createSession({ id })}`;
 }
 
 async function roleCookie(username: string, role: "viewer" | "pickup"): Promise<string> {

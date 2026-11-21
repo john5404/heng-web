@@ -46,9 +46,9 @@ describe("requireRole", () => {
 });
 
 describe("passwords", () => {
-  it("verifies a hash of the same password", async () => {
+  it("verifies a salted SHA-512 hash of the same password", async () => {
     const stored = await hashPassword("correct-horse");
-    expect(stored.startsWith("scrypt:")).toBe(true);
+    expect(stored.startsWith("sha512:")).toBe(true);
     expect(await verifyPassword("correct-horse", stored)).toBe(true);
     expect(await verifyPassword("wrong", stored)).toBe(false);
   });
@@ -72,8 +72,17 @@ describe("login and sessions", () => {
     expect(response.status).toBe(401);
   });
 
-  it("logs in the seeded admin and requireUser reads the session", async () => {
-    const user = await loginWithPassword("admin", "Hancheng2027!");
+  it("logs in an admin and requireUser reads the session", async () => {
+    const passwordHash = await hashPassword("login-test-password");
+    await sql(
+      `insert into users (username, password_hash, role)
+       values ($1, $2, 'admin')
+       on conflict (username) do update
+         set password_hash = excluded.password_hash, role = 'admin', disabled = false`,
+      ["admin", passwordHash],
+    );
+
+    const user = await loginWithPassword("admin", "login-test-password");
     expect(user?.username).toBe("admin");
     expect(user?.role).toBe("admin");
 
@@ -81,7 +90,7 @@ describe("login and sessions", () => {
       new Request("http://localhost/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "admin", password: "Hancheng2027!" }),
+        body: JSON.stringify({ username: "admin", password: "login-test-password" }),
       }),
     );
     expect(response.status).toBe(200);
@@ -95,6 +104,28 @@ describe("login and sessions", () => {
     );
     expect(authed).not.toBeInstanceOf(Response);
     expect((authed as User).username).toBe("admin");
+  });
+
+  it("ensureBootstrapAdmin creates admin only when the users table is empty", async () => {
+    const previous = process.env.ADMIN_PASSWORD;
+    process.env.ADMIN_PASSWORD = "bootstrap-only-password";
+    try {
+      const before = await sql<{ n: string | number }>("select count(*)::int as n from users");
+      if (Number(before[0]?.n ?? 0) === 0) {
+        const { ensureBootstrapAdmin } = await import("../src/lib/auth");
+        await ensureBootstrapAdmin();
+        const user = await loginWithPassword("admin", "bootstrap-only-password");
+        expect(user?.username).toBe("admin");
+      } else {
+        // Shared PGlite already has users from other tests: bootstrap must no-op.
+        const { ensureBootstrapAdmin } = await import("../src/lib/auth");
+        await ensureBootstrapAdmin();
+        expect(await loginWithPassword("admin", "bootstrap-only-password")).toBeNull();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = previous;
+    }
   });
 
   it("requireUser rejects a missing cookie", async () => {

@@ -1,8 +1,5 @@
-import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { sql } from "./db";
-
-const scryptAsync = promisify(scrypt);
 
 export const SESSION_COOKIE = "hancheng_session";
 
@@ -32,20 +29,40 @@ function sessionSecret(): string {
   return "dev-insecure-session-secret";
 }
 
+/** Passwords: salted SHA-512 (Node crypto). Stored as sha512:<saltHex>:<digestHex>. Never plaintext. */
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16);
-  const hash = (await scryptAsync(password, salt, 64)) as Buffer;
-  return `scrypt:${salt.toString("hex")}:${hash.toString("hex")}`;
+  const digest = createHash("sha512").update(salt).update(password, "utf8").digest();
+  return `sha512:${salt.toString("hex")}:${digest.toString("hex")}`;
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [scheme, saltHex, hashHex] = stored.split(":");
-  if (scheme !== "scrypt" || !saltHex || !hashHex) return false;
+  if (scheme !== "sha512" || !saltHex || !hashHex) return false;
   const salt = Buffer.from(saltHex, "hex");
   const expected = Buffer.from(hashHex, "hex");
-  const actual = (await scryptAsync(password, salt, 64)) as Buffer;
+  const actual = createHash("sha512").update(salt).update(password, "utf8").digest();
   if (actual.length !== expected.length) return false;
   return timingSafeEqual(actual, expected);
+}
+
+/**
+ * If the users table is empty and ADMIN_PASSWORD is set, create username `admin`
+ * with a salted SHA-512 hash. No password is stored in migrations or docs.
+ */
+export async function ensureBootstrapAdmin(): Promise<void> {
+  const password = process.env.ADMIN_PASSWORD?.trim();
+  if (!password) return;
+  const countRows = await sql<{ n: string | number }>("select count(*)::int as n from users");
+  const count = Number(countRows[0]?.n ?? 0);
+  if (count > 0) return;
+  const passwordHash = await hashPassword(password);
+  await sql(
+    `insert into users (username, password_hash, role)
+     values ('admin', $1, 'admin')
+     on conflict (username) do nothing`,
+    [passwordHash],
+  );
 }
 
 export function createSession(user: Pick<User, "id">): string {
@@ -109,6 +126,7 @@ function rowToUser(row: UserRow): User {
 }
 
 export async function requireUser(request: Request): Promise<User | Response> {
+  await ensureBootstrapAdmin();
   const token = cookieValue(request.headers.get("cookie"), SESSION_COOKIE);
   if (!token) return unauthorized();
   const userId = verifySessionToken(token);
@@ -131,6 +149,7 @@ export async function loginWithPassword(
   username: string,
   password: string,
 ): Promise<User | null> {
+  await ensureBootstrapAdmin();
   const rows = await sql<UserRow>(
     "select id, username, role, disabled, password_hash from users where username = $1",
     [username],
