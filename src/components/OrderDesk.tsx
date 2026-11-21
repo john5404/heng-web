@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useState, type CSSProperties } from "react";
-import { phoneFieldWarning } from "@/lib/phone";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState, type CSSProperties } from "react";
+import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
+import { phonePopupOn } from "@/lib/phone";
 
 type AddonItem = {
   id: string;
@@ -65,6 +66,8 @@ export default function OrderDesk() {
     price: "",
     note: "",
   });
+  const [phoneDialog, setPhoneDialog] = useState<string | null>(null);
+  const phoneInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void (async () => {
@@ -152,14 +155,22 @@ export default function OrderDesk() {
     }
   }
 
-  const phoneWarning = phoneFieldWarning(form.phone);
+  const phoneBlocked = phonePopupOn("submit", form.phone).kind === "popup";
+
+  function showPhonePopup(event: "blur" | "submit") {
+    const notice = phonePopupOn(event, form.phone);
+    if (notice.kind === "popup") setPhoneDialog(notice.message);
+    return notice.kind === "popup";
+  }
+
+  function dismissPhonePopup() {
+    setPhoneDialog(null);
+    window.setTimeout(() => phoneInputRef.current?.focus(), 0);
+  }
 
   async function onCreate(event: FormEvent) {
     event.preventDefault();
-    if (phoneWarning) {
-      setError(phoneWarning);
-      return;
-    }
+    if (showPhonePopup("submit")) return;
     const price = form.price.trim() === "" ? undefined : Number(form.price);
     const ok = await mutate("/api/orders", "POST", {
       customer_name: form.customer_name,
@@ -233,7 +244,14 @@ export default function OrderDesk() {
         <p style={styles.note}>
           已收預設 2000；售價低於 2000 則預設收滿。魚翅羹可單點，或加在既有項目上，訂金與領取各自計算。
         </p>
-        <form onSubmit={onCreate} style={styles.form}>
+        <form
+          onSubmit={onCreate}
+          onKeyDown={(event: KeyboardEvent<HTMLFormElement>) => {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            if (showPhonePopup("submit")) event.preventDefault();
+          }}
+          style={styles.form}
+        >
           <label style={styles.field}>
             姓名
             <input
@@ -246,18 +264,15 @@ export default function OrderDesk() {
           <label style={styles.field}>
             電話
             <input
+              ref={phoneInputRef}
               value={form.phone}
               onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
+              onBlur={() => showPhonePopup("blur")}
               inputMode="tel"
               style={styles.input}
-              aria-invalid={phoneWarning ? true : undefined}
+              aria-invalid={phoneBlocked ? true : undefined}
               required
             />
-            {phoneWarning ? (
-              <span role="alert" style={styles.error}>
-                {phoneWarning}
-              </span>
-            ) : null}
           </label>
           <label style={styles.field}>
             內用／外帶
@@ -325,9 +340,20 @@ export default function OrderDesk() {
               maxLength={500}
             />
           </label>
-          <button type="submit" disabled={pending || Boolean(phoneWarning)} style={styles.button}>
-            新增
-          </button>
+          <span
+            style={styles.submitWrap}
+            onClick={() => {
+              if (phoneBlocked && !pending) showPhonePopup("submit");
+            }}
+          >
+            <button
+              type="submit"
+              disabled={pending || phoneBlocked}
+              style={{ ...styles.button, pointerEvents: phoneBlocked && !pending ? "none" : undefined }}
+            >
+              新增
+            </button>
+          </span>
         </form>
       </section>
       ) : null}
@@ -492,6 +518,7 @@ export default function OrderDesk() {
           ) : null}
         </article>
       ))}
+      {phoneDialog ? <PhoneFormatDialog message={phoneDialog} onDismiss={dismissPhonePopup} /> : null}
     </main>
   );
 }
@@ -514,6 +541,7 @@ const styles: Record<string, CSSProperties> = {
   input: { minHeight: 56, fontSize: 22, padding: "0 14px" },
   select: { minHeight: 56, fontSize: 20 },
   button: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
+  submitWrap: { display: "inline-flex" },
   picked: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px", background: "#146c43", color: "#fff" },
   danger: { minHeight: 56, minWidth: 112, fontSize: 22, padding: "0 18px" },
   meta: { display: "flex", gap: 12, alignItems: "center", margin: "6px 0", flexWrap: "wrap" },

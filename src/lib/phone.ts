@@ -6,9 +6,16 @@ export function isTaiwanPhone(value: string): boolean {
   return /^09\d{8}$/.test(phone) || /^0\d-\d{7,8}$/.test(phone);
 }
 
-/** Empty is not warned here (the field is required). Any other mismatch is a visible 繁中 warning. */
-export function phoneFieldWarning(value: string): string {
+export type PhonePopup = { kind: "popup"; message: string } | { kind: "none" };
+
+/**
+ * Invalid phones on 登記訂單 are a popup, not an inline warning.
+ * The popup opens when the user tries to submit or leaves the field.
+ * Typing (change) stays quiet. Empty is not a format error (the field is required).
+ */
+export function phonePopupOn(event: "blur" | "submit" | "change", value: string): PhonePopup {
+  if (event === "change") return { kind: "none" };
   const phone = value.trim();
-  if (phone === "" || isTaiwanPhone(phone)) return "";
-  return TAIWAN_PHONE_ERROR;
+  if (phone === "" || isTaiwanPhone(phone)) return { kind: "none" };
+  return { kind: "popup", message: TAIWAN_PHONE_ERROR };
 }
