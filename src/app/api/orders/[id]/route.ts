@@ -25,6 +25,7 @@ type Body = {
   picked_up?: unknown;
   note?: unknown;
   quantity?: unknown;
+  alacarte?: unknown;
 };
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -149,6 +150,83 @@ async function markPickedUp(user: User, id: string, pickedUp: boolean): Promise<
   }
 }
 
+const NEED_ALACARTE = "請至少加入一道單點";
+
+type EditLine = { id?: string; dish_id: string; quantity: number };
+
+function parseEditLines(value: unknown): EditLine[] | Response {
+  if (!Array.isArray(value)) return Response.json({ error: "單點格式不正確" }, { status: 400 });
+  const merged = new Map<string, EditLine>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") return Response.json({ error: "單點格式不正確" }, { status: 400 });
+    const record = item as { id?: unknown; dish_id?: unknown; quantity?: unknown };
+    const id = asString(record.id);
+    const dishId = asString(record.dish_id);
+    if (!dishId || !UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    if (id && !UUID_RE.test(id)) return Response.json({ error: "菜色不正確" }, { status: 400 });
+    const parsed = asInt(record.quantity);
+    const quantity = record.quantity === undefined || record.quantity === null || record.quantity === "" ? 1 : parsed;
+    if (quantity === undefined || quantity < 1) {
+      return Response.json({ error: "數量須為正整數" }, { status: 400 });
+    }
+    const key = id ?? `new:${dishId}`;
+    const prev = merged.get(key);
+    if (prev) prev.quantity += quantity;
+    else merged.set(key, { ...(id ? { id } : {}), dish_id: dishId, quantity });
+  }
+  return [...merged.values()];
+}
+
+type ReadyLine = EditLine & { unitPrice?: number };
+
+async function resolveAlacarteEdits(query: SqlFn, orderId: string, lines: EditLine[]): Promise<ReadyLine[] | Response> {
+  const current = await query<{ id: string; dish_id: string }>(
+    "select id, dish_id from addons where parent_order_item_id = $1 and deleted_at is null",
+    [orderId],
+  );
+  const byId = new Map(current.map((row) => [row.id, row]));
+  const ready: ReadyLine[] = [];
+  for (const line of lines) {
+    if (line.id) {
+      const row = byId.get(line.id);
+      if (!row || row.dish_id !== line.dish_id) return Response.json({ error: "找不到菜色" }, { status: 400 });
+      ready.push(line);
+      continue;
+    }
+    const found = await query<{ alacarte_price: number | string }>(
+      "select alacarte_price from dishes where id = $1",
+      [line.dish_id],
+    );
+    if (!found[0]) return Response.json({ error: "找不到菜色" }, { status: 400 });
+    ready.push({ ...line, unitPrice: Number(found[0].alacarte_price) });
+  }
+  return ready;
+}
+
+async function writeAlacarteEdits(query: SqlFn, orderId: string, lines: ReadyLine[]): Promise<void> {
+  const current = await query<{ id: string }>(
+    "select id from addons where parent_order_item_id = $1 and deleted_at is null",
+    [orderId],
+  );
+  const kept = new Set<string>();
+  for (const line of lines) {
+    if (line.id) {
+      await query("update addons set quantity = $1 where id = $2 and deleted_at is null", [line.quantity, line.id]);
+      kept.add(line.id);
+      continue;
+    }
+    await query(
+      `insert into addons (parent_order_item_id, dish_id, price, amount_paid, quantity)
+       values ($1, $2, $3, 0, $4)`,
+      [orderId, line.dish_id, line.unitPrice ?? 0, line.quantity],
+    );
+  }
+  for (const row of current) {
+    if (kept.has(row.id)) continue;
+    await query("update addons set deleted_at = now() where id = $1 and deleted_at is null", [row.id]);
+  }
+}
+
 const ADDON_FIELDS = new Set(["price", "amount_paid", "picked_up", "quantity"]);
 
 async function updateAddon(query: SqlFn, admin: User, id: string, body: Body): Promise<AddonJson | Response> {
@@ -261,12 +339,27 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
       if (slot[0].service_type !== serviceType) {
         return Response.json({ error: "時段與內用或外帶不符" }, { status: 400 });
       }
-      if (menuSetId && menuSetId !== before.menu_set_id) {
-        const set = await query<{ id: string }>("select id from menu_sets where id = $1", [menuSetId]);
-        if (!set[0]) return Response.json({ error: "找不到年菜價格" }, { status: 400 });
+      let editLines: ReadyLine[] | undefined;
+      if (body.alacarte !== undefined) {
+        const parsedLines = parseEditLines(body.alacarte);
+        if (parsedLines instanceof Response) return parsedLines;
+        const resolved = await resolveAlacarteEdits(query, id, parsedLines);
+        if (resolved instanceof Response) return resolved;
+        editLines = resolved;
+      }
+      const lineCount = editLines ? editLines.length : before.addons.length;
+      if (!menuSetId && lineCount === 0) {
+        return Response.json({ error: NEED_ALACARTE }, { status: 400 });
       }
 
       let price = before.price;
+      if (menuSetId && menuSetId !== before.menu_set_id) {
+        const set = await query<{ price: number }>("select price from menu_sets where id = $1", [menuSetId]);
+        if (!set[0]) return Response.json({ error: "找不到年菜價格" }, { status: 400 });
+        if (body.price === undefined) price = Number(set[0].price);
+      } else if (!menuSetId && menuSetId !== before.menu_set_id && body.price === undefined) {
+        price = 0;
+      }
       if (body.price !== undefined) {
         const parsed = asInt(body.price);
         if (parsed === undefined || parsed < 0) {
@@ -306,6 +399,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
          where id = $10 and deleted_at is null`,
         [customerName, phone, serviceType, menuSetId, slotId, price, amountPaid, pickedUp, note, id],
       );
+      if (editLines) await writeAlacarteEdits(query, id, editLines);
       const after = await loadOrder(query, id);
       if (!after) return Response.json({ error: "找不到訂單" }, { status: 404 });
       await writeAudit(

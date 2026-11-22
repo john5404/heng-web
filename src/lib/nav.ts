@@ -8,6 +8,7 @@ export type NavLink = {
 
 const MAIN: NavLink[] = [
   { href: "/register", label: "登記訂單", group: "main" },
+  { href: "/orders", label: "訂單管理", group: "main" },
   { href: "/floor", label: "外場", group: "main" },
   { href: "/kitchen", label: "廚房", group: "main" },
 ];
@@ -19,7 +20,7 @@ const SETTINGS: NavLink[] = [
   { href: "/settings/audit", label: "操作紀錄", group: "settings" },
 ];
 
-/** Admin sees every settings screen. Pickup and viewer only see 登記訂單, 外場, and 廚房. */
+/** Admin sees every settings screen. Pickup and viewer see the main screens, including 訂單管理, but not settings. */
 export function navLinks(role: Role): NavLink[] {
   if (role === "admin") return [...MAIN, ...SETTINGS];
   return MAIN;
