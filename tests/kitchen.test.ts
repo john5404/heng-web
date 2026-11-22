@@ -5,7 +5,7 @@ import { DELETE, PATCH } from "../src/app/api/orders/[id]/route";
 import { POST } from "../src/app/api/orders/route";
 import { createSession, hashPassword, SESSION_COOKIE } from "../src/lib/auth";
 import { sql } from "../src/lib/db";
-import { dishTotalsForSlot, mergeDishTotals } from "../src/lib/kitchen";
+import { dishTotalsForSlot } from "../src/lib/kitchen";
 
 const DATE = "2027-02-16";
 const SHRIMP = "白灼蒜味蝦";
@@ -60,14 +60,17 @@ function params(id: string) {
   return { params: Promise.resolve({ id }) };
 }
 
-async function ensureSlot(label: string): Promise<string> {
-  const existing = await sql<{ id: string }>("select id from day_slots where label = $1 limit 1", [label]);
+async function ensureSlot(label: string, date = DATE): Promise<string> {
+  const existing = await sql<{ id: string }>(
+    "select id from day_slots where label = $1 and service_date = $2::date limit 1",
+    [label, date],
+  );
   if (existing[0]) return existing[0].id;
   const rows = await sql<{ id: string }>(
     `insert into day_slots (service_date, service_type, label, start_time, end_time)
      values ($1, 'takeout', $2, '11:00', '11:30')
      returning id`,
-    [DATE, label],
+    [date, label],
   );
   return rows[0].id;
 }
@@ -168,12 +171,18 @@ describe("kitchen dish totals", () => {
     expect(listed.status).toBe(200);
     const body = (await listed.json()) as {
       note: string;
+      by_slot: { totals: { dishName: string; qty: number }[] }[];
       totals: { dishName: string; qty: number }[];
+      combined: { dishName: string; qty: number }[];
     };
     expect(body.note).toContain("備料總量");
+    expect(qtyOf(body.by_slot[0].totals, SHRIMP)).toBe(1);
+    expect(qtyOf(body.by_slot[0].totals, REPLACEMENT)).toBe(1);
+    expect(qtyOf(body.by_slot[0].totals, SOUP)).toBe(2);
     expect(qtyOf(body.totals, SHRIMP)).toBe(1);
-    expect(qtyOf(body.totals, REPLACEMENT)).toBe(1);
+    expect(qtyOf(body.totals, REPLACEMENT)).toBe(2);
     expect(qtyOf(body.totals, SOUP)).toBe(2);
+    expect(qtyOf(body.combined, REPLACEMENT)).toBe(2);
 
     const anon = await kitchenGet(request("GET", undefined, `http://localhost/api/kitchen?date=${DATE}&slot_id=${slot}`));
     expect(anon.status).toBe(401);
@@ -198,14 +207,18 @@ describe("kitchen dish totals", () => {
     expect(missing.status).toBe(400);
   });
 
-  it("returns each selected slot and a same-day combined total", async () => {
+  it("sums 當日合計 across every slot that day, including ones that were not selected", async () => {
     const admin = await adminCookie();
-    const noon = await ensureSlot("廚房多選中午");
-    const evening = await ensureSlot("廚房多選晚上");
-    const leftOut = await ensureSlot("廚房多選未選");
+    const day = "2027-02-19";
+    const otherDay = "2027-02-21";
+    const noon = await ensureSlot("廚房全日中午", day);
+    const evening = await ensureSlot("廚房全日晚上", day);
+    const leftOut = await ensureSlot("廚房全日未選", day);
+    const elsewhere = await ensureSlot("廚房別日", otherDay);
     const wan = await setId("萬元套餐");
+    const soup = (await sql<{ id: string }>("select id from dishes where name = $1", [SOUP]))[0].id;
 
-    const create = async (name: string, slotId: string) => {
+    const create = async (name: string, slotId: string, soupQty = 0) => {
       const response = await POST(
         request("POST", admin, "http://localhost/api/orders", {
           customer_name: name,
@@ -213,20 +226,18 @@ describe("kitchen dish totals", () => {
           service_type: "takeout",
           menu_set_id: wan,
           slot_id: slotId,
+          ...(soupQty > 0 ? { alacarte: [{ dish_id: soup, quantity: soupQty }] } : {}),
         }),
       );
       expect(response.status).toBe(201);
     };
-    await create("多選中午客", noon);
-    await create("多選晚上客", evening);
-    await create("多選未選客", leftOut);
+    await create("全日中午客", noon, 2);
+    await create("全日晚上客", evening);
+    await create("全日未選客", leftOut, 1);
+    await create("別日客", elsewhere, 4);
 
     const listed = await kitchenGet(
-      request(
-        "GET",
-        admin,
-        `http://localhost/api/kitchen?date=${DATE}&slot_id=${noon}&slot_id=${evening}`,
-      ),
+      request("GET", admin, `http://localhost/api/kitchen?date=${day}&slot_id=${noon}&slot_id=${evening}`),
     );
     expect(listed.status).toBe(200);
     const body = (await listed.json()) as {
@@ -236,10 +247,13 @@ describe("kitchen dish totals", () => {
     };
     expect(body.by_slot.map((slot) => slot.slot_id)).toEqual([noon, evening]);
     expect(qtyOf(body.by_slot[0].totals, SHRIMP)).toBe(1);
+    expect(qtyOf(body.by_slot[0].totals, SOUP)).toBe(2);
     expect(qtyOf(body.by_slot[1].totals, SHRIMP)).toBe(1);
-    expect(qtyOf(body.combined, SHRIMP)).toBe(2);
-    expect(qtyOf(body.totals, SHRIMP)).toBe(2);
-    expect(mergeDishTotals(body.by_slot.map((slot) => slot.totals))).toEqual(body.combined);
+    expect(qtyOf(body.by_slot[1].totals, SOUP)).toBe(0);
     expect(body.by_slot.some((slot) => slot.slot_id === leftOut)).toBe(false);
+    expect(qtyOf(body.combined, SHRIMP)).toBe(3);
+    expect(qtyOf(body.combined, SOUP)).toBe(3);
+    expect(qtyOf(body.totals, SHRIMP)).toBe(3);
+    expect(qtyOf(body.totals, SOUP)).toBe(3);
   });
 });

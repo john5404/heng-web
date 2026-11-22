@@ -52,6 +52,14 @@ export async function dishTotalsForSlot(date: string, slotId: string): Promise<D
     .sort(compareDishTotals);
 }
 
+/** Every dish on the calendar day, summed across all of that day's slots. */
+export async function dishTotalsForDate(date: string): Promise<DishTotal[]> {
+  const slots = await sql<{ id: string }>("select id from day_slots where service_date = $1::date", [date]);
+  const groups: DishTotal[][] = [];
+  for (const slot of slots) groups.push(await dishTotalsForSlot(date, slot.id));
+  return mergeDishTotals(groups);
+}
+
 export function mergeDishTotals(groups: DishTotal[][]): DishTotal[] {
   const qtyByName = new Map<string, number>();
   for (const group of groups) {

@@ -1,6 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { sql } from "@/lib/db";
-import { PREP_NOTE, dishTotalsForSlot, mergeDishTotals, type DishTotal } from "@/lib/kitchen";
+import { PREP_NOTE, dishTotalsForDate, dishTotalsForSlot, type DishTotal } from "@/lib/kitchen";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -43,14 +43,14 @@ export async function GET(request: Request): Promise<Response> {
       totals: await dishTotalsForSlot(date, slotId),
     });
   }
-  const combined = mergeDishTotals(bySlot.map((slot) => slot.totals));
+  const day = await dishTotalsForDate(date);
   return Response.json({
     date,
     slot_id: slotIds[0],
     slot_ids: slotIds,
-    totals: combined,
+    totals: day,
     by_slot: bySlot,
-    combined,
+    combined: day,
     note: PREP_NOTE,
   });
 }

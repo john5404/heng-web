@@ -165,7 +165,8 @@ export default function KitchenPage() {
       {selected.length > 0 ? (
         <section>
           <h2 style={styles.h2}>當日合計</h2>
-          {combined.length === 0 && !pending ? <p style={styles.note}>所選時段尚無備料。</p> : <DishList rows={combined} />}
+          <p style={styles.note}>這一天每個時段加總，含未選的時段。</p>
+          {combined.length === 0 && !pending ? <p style={styles.note}>這天尚無備料。</p> : <DishList rows={combined} />}
         </section>
       ) : null}
     </main>
