@@ -1,4 +1,11 @@
 import { writeAudit } from "@/lib/audit";
+import {
+  BAD_ALACARTE_PRICE,
+  EMPTY_ALACARTE_PRICE,
+  EMPTY_MENU_PRICE,
+  isBlank,
+  nonNegativeInteger,
+} from "@/lib/numbers";
 import { requireRole, requireUser, type User } from "@/lib/auth";
 import { sql, withTransaction, type SqlFn } from "@/lib/db";
 import { SOUP_SET_NAME } from "@/lib/orders";
@@ -111,13 +118,10 @@ export async function POST(request: Request): Promise<Response> {
   if (type === "dish") {
     const name = asString(body.name);
     if (!name) return Response.json({ error: "菜名必填" }, { status: 400 });
-    let alacartePrice = 0;
-    if (body.price !== undefined && body.price !== null && body.price !== "") {
-      const parsed = asInt(body.price);
-      if (parsed === undefined || parsed < 0) {
-        return Response.json({ error: "單點價格須為非負整數" }, { status: 400 });
-      }
-      alacartePrice = parsed;
+    if (isBlank(body.price)) return Response.json({ error: EMPTY_ALACARTE_PRICE }, { status: 400 });
+    const alacartePrice = nonNegativeInteger(body.price);
+    if (alacartePrice === undefined) {
+      return Response.json({ error: BAD_ALACARTE_PRICE }, { status: 400 });
     }
     const existing = await sql<DishRow>("select id, name, alacarte_price from dishes where name = $1", [name]);
     if (existing[0]) {
@@ -178,8 +182,13 @@ export async function PATCH(request: Request): Promise<Response> {
     const before = (await sql<MenuSetRow>("select id, name, price from menu_sets where id = $1", [id]))[0];
     if (!before) return Response.json({ error: "找不到套餐" }, { status: 404 });
     const name = asString(body.name) ?? before.name;
-    const price = asInt(body.price) ?? before.price;
-    if (price < 0) return Response.json({ error: "價格不可為負" }, { status: 400 });
+    let price = before.price;
+    if (body.price !== undefined) {
+      if (isBlank(body.price)) return Response.json({ error: EMPTY_MENU_PRICE }, { status: 400 });
+      const parsed = nonNegativeInteger(body.price);
+      if (parsed === undefined) return Response.json({ error: "價格須為非負整數" }, { status: 400 });
+      price = parsed;
+    }
     const after = (
       await sql<MenuSetRow>("update menu_sets set name = $1, price = $2 where id = $3 returning id, name, price", [
         name,
@@ -200,9 +209,11 @@ export async function PATCH(request: Request): Promise<Response> {
 
   if (type === "dish_price") {
     const id = asString(body.id);
-    const price = asInt(body.alacarte_price);
-    if (!id || price === undefined || price < 0) {
-      return Response.json({ error: "單點價格須為非負整數" }, { status: 400 });
+    if (!id) return Response.json({ error: "缺少菜項" }, { status: 400 });
+    if (isBlank(body.alacarte_price)) return Response.json({ error: EMPTY_ALACARTE_PRICE }, { status: 400 });
+    const price = nonNegativeInteger(body.alacarte_price);
+    if (price === undefined) {
+      return Response.json({ error: BAD_ALACARTE_PRICE }, { status: 400 });
     }
     const before = (
       await sql<DishRow>("select id, name, alacarte_price from dishes where id = $1", [id])

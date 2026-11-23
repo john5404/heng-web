@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { ConfirmDialog } from "@/components/PhoneFormatDialog";
+import { confirmSlotDelete } from "@/lib/confirm-text";
 
 type Slot = {
   id: string;
@@ -24,6 +26,7 @@ export default function SlotSettingsPage() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, Partial<Slot>>>({});
+  const [confirm, setConfirm] = useState<{ message: string; run: () => void } | null>(null);
   const [form, setForm] = useState({
     service_date: "2027-02-05",
     service_type: "takeout" as "takeout" | "dine_in",
@@ -240,7 +243,12 @@ export default function SlotSettingsPage() {
                     type="button"
                     disabled={pending}
                     style={styles.danger}
-                    onClick={() => mutate("DELETE", { id: slot.id })}
+                    onClick={() =>
+                      setConfirm({
+                        message: confirmSlotDelete(date, typeLabel(serviceType), label),
+                        run: () => void mutate("DELETE", { id: slot.id }),
+                      })
+                    }
                   >
                     刪除
                   </button>
@@ -250,6 +258,17 @@ export default function SlotSettingsPage() {
           </ul>
         </section>
       ))}
+      {confirm ? (
+        <ConfirmDialog
+          message={confirm.message}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const run = confirm.run;
+            setConfirm(null);
+            run();
+          }}
+        />
+      ) : null}
     </main>
   );
 }

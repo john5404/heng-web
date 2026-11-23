@@ -145,6 +145,12 @@ select {
   line-height: 1.45;
 }
 
+.phone-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .phone-dialog-dismiss {
   min-height: 56px;
   min-width: 112px;

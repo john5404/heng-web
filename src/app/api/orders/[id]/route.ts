@@ -1,4 +1,16 @@
 import { writeAudit } from "@/lib/audit";
+import {
+  BAD_ALACARTE_PRICE,
+  BAD_PAID,
+  BAD_QUANTITY,
+  BAD_SET_PRICE,
+  EMPTY_ALACARTE_PRICE,
+  EMPTY_PAID,
+  EMPTY_QUANTITY,
+  EMPTY_SET_PRICE,
+  isBlank,
+  nonNegativeInteger,
+} from "@/lib/numbers";
 import { requireUser, type User } from "@/lib/auth";
 import { withTransaction, type SqlFn } from "@/lib/db";
 import {
@@ -164,10 +176,14 @@ function parseEditLines(value: unknown): EditLine[] | Response {
     const dishId = asString(record.dish_id);
     if (!dishId || !UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
     if (id && !UUID_RE.test(id)) return Response.json({ error: "菜色不正確" }, { status: 400 });
-    const parsed = asInt(record.quantity);
-    const quantity = record.quantity === undefined || record.quantity === null || record.quantity === "" ? 1 : parsed;
-    if (quantity === undefined || quantity < 1) {
-      return Response.json({ error: "數量須為正整數" }, { status: 400 });
+    let quantity = 1;
+    if (record.quantity !== undefined) {
+      if (isBlank(record.quantity)) return Response.json({ error: EMPTY_QUANTITY }, { status: 400 });
+      const parsed = nonNegativeInteger(record.quantity);
+      if (parsed === undefined || parsed < 1) {
+        return Response.json({ error: BAD_QUANTITY }, { status: 400 });
+      }
+      quantity = parsed;
     }
     const key = id ?? `new:${dishId}`;
     const prev = merged.get(key);
@@ -239,18 +255,16 @@ async function updateAddon(query: SqlFn, admin: User, id: string, body: Body): P
 
   let price = before.price;
   if (body.price !== undefined) {
-    const parsed = asInt(body.price);
-    if (parsed === undefined || parsed < 0) {
-      return Response.json({ error: "售價須為非負整數" }, { status: 400 });
-    }
+    if (isBlank(body.price)) return Response.json({ error: EMPTY_ALACARTE_PRICE }, { status: 400 });
+    const parsed = nonNegativeInteger(body.price);
+    if (parsed === undefined) return Response.json({ error: BAD_ALACARTE_PRICE }, { status: 400 });
     price = parsed;
   }
   let amountPaid = before.amount_paid;
   if (body.amount_paid !== undefined) {
-    const parsed = asInt(body.amount_paid);
-    if (parsed === undefined || parsed < 0) {
-      return Response.json({ error: "已收須為非負整數" }, { status: 400 });
-    }
+    if (isBlank(body.amount_paid)) return Response.json({ error: EMPTY_PAID }, { status: 400 });
+    const parsed = nonNegativeInteger(body.amount_paid);
+    if (parsed === undefined) return Response.json({ error: BAD_PAID }, { status: 400 });
     amountPaid = parsed;
   }
   let pickedUp = before.picked_up;
@@ -262,9 +276,10 @@ async function updateAddon(query: SqlFn, admin: User, id: string, body: Body): P
   }
   let quantity = before.quantity;
   if (body.quantity !== undefined) {
-    const parsed = asInt(body.quantity);
+    if (isBlank(body.quantity)) return Response.json({ error: EMPTY_QUANTITY }, { status: 400 });
+    const parsed = nonNegativeInteger(body.quantity);
     if (parsed === undefined || parsed < 1) {
-      return Response.json({ error: "數量須為正整數" }, { status: 400 });
+      return Response.json({ error: BAD_QUANTITY }, { status: 400 });
     }
     quantity = parsed;
   }
@@ -361,19 +376,21 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
         price = 0;
       }
       if (body.price !== undefined) {
-        const parsed = asInt(body.price);
-        if (parsed === undefined || parsed < 0) {
-          return Response.json({ error: "售價須為非負整數" }, { status: 400 });
+        if (isBlank(body.price)) {
+          if (menuSetId) return Response.json({ error: EMPTY_SET_PRICE }, { status: 400 });
+          price = 0;
+        } else {
+          const parsed = nonNegativeInteger(body.price);
+          if (parsed === undefined) return Response.json({ error: BAD_SET_PRICE }, { status: 400 });
+          price = parsed;
         }
-        price = parsed;
       }
 
       let amountPaid = before.amount_paid;
       if (body.amount_paid !== undefined) {
-        const parsed = asInt(body.amount_paid);
-        if (parsed === undefined || parsed < 0) {
-          return Response.json({ error: "已收須為非負整數" }, { status: 400 });
-        }
+        if (isBlank(body.amount_paid)) return Response.json({ error: EMPTY_PAID }, { status: 400 });
+        const parsed = nonNegativeInteger(body.amount_paid);
+        if (parsed === undefined) return Response.json({ error: BAD_PAID }, { status: 400 });
         amountPaid = parsed;
       }
 

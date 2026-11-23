@@ -1,9 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
+import { ConfirmDialog, PhoneFormatDialog } from "@/components/PhoneFormatDialog";
 import { addonLineText, orderAlacarteDishes, registerSetChoices } from "@/lib/alacarte";
+import { confirmLineRemove, confirmOrderDelete } from "@/lib/confirm-text";
 import { isPaidInFull, orderTotal, remainingAmount } from "@/lib/money";
+import {
+  BAD_PAID,
+  BAD_QUANTITY,
+  BAD_SET_PRICE,
+  EMPTY_PAID,
+  EMPTY_QUANTITY,
+  EMPTY_SET_PRICE,
+  nonNegativeInteger,
+} from "@/lib/numbers";
 import { phonePopupOn } from "@/lib/phone";
 
 type Role = "admin" | "pickup" | "viewer";
@@ -46,8 +56,10 @@ type DraftLine = {
   dishId: string;
   name: string;
   unitPrice: number;
-  quantity: number;
+  quantity: string;
 };
+
+type PendingConfirm = { message: string; run: () => void };
 
 function typeLabel(type: string): string {
   return type === "dine_in" ? "內用" : "外帶";
@@ -78,6 +90,8 @@ export default function OrdersPage() {
   const [lines, setLines] = useState<DraftLine[]>([]);
   const [addDishId, setAddDishId] = useState("");
   const [phoneDialog, setPhoneDialog] = useState<string | null>(null);
+  const [numberDialog, setNumberDialog] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
 
   const canManage = role === "admin";
   const choices = useMemo(() => registerSetChoices(sets), [sets]);
@@ -170,7 +184,7 @@ export default function OrdersPage() {
         dishId: addon.dish_id,
         name: addon.dish_name,
         unitPrice: addon.price,
-        quantity: addon.quantity,
+        quantity: String(addon.quantity),
       })),
     );
     setError("");
@@ -188,7 +202,8 @@ export default function OrdersPage() {
     setLines((prev) => {
       const existing = prev.find((line) => line.dishId === dish.id && !line.addonId);
       if (existing) {
-        return prev.map((line) => (line.key === existing.key ? { ...line, quantity: line.quantity + 1 } : line));
+        const current = nonNegativeInteger(existing.quantity) ?? 0;
+        return prev.map((line) => (line.key === existing.key ? { ...line, quantity: String(current + 1) } : line));
       }
       return [
         ...prev,
@@ -197,7 +212,7 @@ export default function OrdersPage() {
           dishId: dish.id,
           name: dish.name,
           unitPrice: dish.alacarte_price,
-          quantity: 1,
+          quantity: "1",
         },
       ];
     });
@@ -207,7 +222,7 @@ export default function OrdersPage() {
   const paid = whole(amountPaid) ?? 0;
   const draftTotal = orderTotal(
     menuSetId ? setPortion : 0,
-    lines.map((line) => ({ price: line.unitPrice, quantity: line.quantity })),
+    lines.map((line) => ({ price: line.unitPrice, quantity: nonNegativeInteger(line.quantity) ?? 0 })),
   );
   const draftRemaining = remainingAmount(draftTotal, paid);
 
@@ -223,15 +238,43 @@ export default function OrdersPage() {
       setError("請選擇時段");
       return;
     }
-    const kept = lines.filter((line) => line.quantity > 0);
+    const kept: { line: DraftLine; quantity: number }[] = [];
+    for (const line of lines) {
+      if (line.quantity.trim() === "") {
+        setNumberDialog(EMPTY_QUANTITY);
+        return;
+      }
+      const quantity = nonNegativeInteger(line.quantity);
+      if (quantity === undefined || quantity < 1) {
+        setNumberDialog(BAD_QUANTITY);
+        return;
+      }
+      kept.push({ line, quantity });
+    }
     if (!menuSetId && kept.length === 0) {
       setError("請至少加入一道單點");
       return;
     }
-    const setPrice = whole(price);
-    const deposit = whole(amountPaid);
-    if (setPrice === null || deposit === null) {
-      setError("金額須為非負整數");
+    let setPrice = 0;
+    if (menuSetId) {
+      if (price.trim() === "") {
+        setNumberDialog(EMPTY_SET_PRICE);
+        return;
+      }
+      const parsed = nonNegativeInteger(price);
+      if (parsed === undefined) {
+        setNumberDialog(BAD_SET_PRICE);
+        return;
+      }
+      setPrice = parsed;
+    }
+    if (amountPaid.trim() === "") {
+      setNumberDialog(EMPTY_PAID);
+      return;
+    }
+    const deposit = nonNegativeInteger(amountPaid);
+    if (deposit === undefined) {
+      setNumberDialog(BAD_PAID);
       return;
     }
     setPending(true);
@@ -245,13 +288,13 @@ export default function OrdersPage() {
         slot_id: slot.id,
         service_type: slot.service_type,
         menu_set_id: menuSetId || null,
-        price: menuSetId ? setPrice : 0,
+        price: setPrice,
         amount_paid: deposit,
         note: note.trim(),
-        alacarte: kept.map((line) => ({
+        alacarte: kept.map(({ line, quantity }) => ({
           ...(line.addonId ? { id: line.addonId } : {}),
           dish_id: line.dishId,
-          quantity: line.quantity,
+          quantity,
         })),
       }),
     });
@@ -348,7 +391,17 @@ export default function OrdersPage() {
               <button type="button" style={styles.button} onClick={() => beginEdit(order)}>
                 編輯
               </button>
-              <button type="button" style={styles.danger} disabled={pending} onClick={() => void remove(order)}>
+              <button
+                type="button"
+                style={styles.danger}
+                disabled={pending}
+                onClick={() =>
+                  setConfirm({
+                    message: confirmOrderDelete(order.customer_name, `${order.service_date} ${order.slot_label}`),
+                    run: () => void remove(order),
+                  })
+                }
+              >
                 刪除
               </button>
             </div>
@@ -416,12 +469,15 @@ export default function OrdersPage() {
                     value={String(line.quantity)}
                     inputMode="numeric"
                     onChange={(event) => {
-                      const next = Number(event.target.value);
-                      setLines((prev) =>
-                        prev
-                          .map((item) => (item.key === line.key ? { ...item, quantity: Number.isFinite(next) ? next : 0 } : item))
-                          .filter((item) => item.quantity > 0),
-                      );
+                      const raw = event.target.value.trim();
+                      if (raw === "0") {
+                        setConfirm({
+                          message: confirmLineRemove(line.name),
+                          run: () => setLines((prev) => prev.filter((item) => item.key !== line.key)),
+                        });
+                        return;
+                      }
+                      setLines((prev) => prev.map((item) => (item.key === line.key ? { ...item, quantity: event.target.value } : item)));
                     }}
                     style={styles.qty}
                   />
@@ -452,6 +508,18 @@ export default function OrdersPage() {
         </article>
       ))}
       {phoneDialog ? <PhoneFormatDialog message={phoneDialog} onDismiss={() => setPhoneDialog(null)} /> : null}
+      {numberDialog ? <PhoneFormatDialog message={numberDialog} onDismiss={() => setNumberDialog(null)} /> : null}
+      {confirm ? (
+        <ConfirmDialog
+          message={confirm.message}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const run = confirm.run;
+            setConfirm(null);
+            run();
+          }}
+        />
+      ) : null}
     </main>
   );
 }

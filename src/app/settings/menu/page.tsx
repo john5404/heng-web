@@ -1,7 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useState, type CSSProperties } from "react";
+import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
 import { registerSetChoices } from "@/lib/alacarte";
+import { BAD_ALACARTE_PRICE, EMPTY_ALACARTE_PRICE, nonNegativeInteger } from "@/lib/numbers";
 
 type SetDish = { id: string; name: string; sort_order?: number };
 type Dish = SetDish & { alacarte_price: number };
@@ -16,6 +18,7 @@ export default function MenuSettingsPage() {
   const [newDishPrice, setNewDishPrice] = useState("");
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   const [replacements, setReplacements] = useState<Record<string, string>>({});
+  const [numberDialog, setNumberDialog] = useState<string | null>(null);
 
   async function load() {
     const response = await fetch("/api/settings/menu");
@@ -68,10 +71,13 @@ export default function MenuSettingsPage() {
   async function onCreateDish(event: FormEvent) {
     event.preventDefault();
     if (!newDishName.trim()) return;
-    const priceText = newDishPrice.trim();
-    const price = priceText === "" ? 0 : Number(priceText);
-    if (!Number.isInteger(price) || price < 0) {
-      setError("單點價格須為非負整數");
+    if (newDishPrice.trim() === "") {
+      setNumberDialog(EMPTY_ALACARTE_PRICE);
+      return;
+    }
+    const price = nonNegativeInteger(newDishPrice);
+    if (price === undefined) {
+      setNumberDialog(BAD_ALACARTE_PRICE);
       return;
     }
     await mutate("POST", { type: "dish", name: newDishName.trim(), price });
@@ -157,13 +163,19 @@ export default function MenuSettingsPage() {
                 type="button"
                 disabled={pending}
                 style={styles.button}
-                onClick={() =>
-                  mutate("PATCH", {
-                    type: "dish_price",
-                    id: dish.id,
-                    alacarte_price: Number(priceDrafts[dish.id] ?? dish.alacarte_price),
-                  })
-                }
+                onClick={() => {
+                  const raw = priceDrafts[dish.id] ?? String(dish.alacarte_price);
+                  if (raw.trim() === "") {
+                    setNumberDialog(EMPTY_ALACARTE_PRICE);
+                    return;
+                  }
+                  const price = nonNegativeInteger(raw);
+                  if (price === undefined) {
+                    setNumberDialog(BAD_ALACARTE_PRICE);
+                    return;
+                  }
+                  void mutate("PATCH", { type: "dish_price", id: dish.id, alacarte_price: price });
+                }}
               >
                 儲存
               </button>
@@ -195,6 +207,7 @@ export default function MenuSettingsPage() {
           </button>
         </form>
       </section>
+      {numberDialog ? <PhoneFormatDialog message={numberDialog} onDismiss={() => setNumberDialog(null)} /> : null}
     </main>
   );
 }

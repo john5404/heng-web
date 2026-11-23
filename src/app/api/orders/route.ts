@@ -1,5 +1,17 @@
 import { orderTotal } from "@/lib/money";
 import { writeAudit } from "@/lib/audit";
+import {
+  BAD_ALACARTE_PRICE,
+  BAD_PAID,
+  BAD_QUANTITY,
+  BAD_SET_PRICE,
+  EMPTY_ALACARTE_PRICE,
+  EMPTY_PAID,
+  EMPTY_QUANTITY,
+  EMPTY_SET_PRICE,
+  isBlank,
+  nonNegativeInteger,
+} from "@/lib/numbers";
 import { requireRole, requireUser, type User } from "@/lib/auth";
 import { sql, withTransaction, type SqlFn } from "@/lib/db";
 import {
@@ -88,10 +100,11 @@ function parseAlacarte(value: unknown): AlacarteLine[] | Response {
     const dishId = asString(record.dish_id);
     if (!dishId || !UUID_RE.test(dishId)) return Response.json({ error: "菜色不正確" }, { status: 400 });
     let quantity = 1;
-    if (record.quantity !== undefined && record.quantity !== null && record.quantity !== "") {
-      const parsed = asInt(record.quantity);
+    if (record.quantity !== undefined) {
+      if (isBlank(record.quantity)) return Response.json({ error: EMPTY_QUANTITY }, { status: 400 });
+      const parsed = nonNegativeInteger(record.quantity);
       if (parsed === undefined || parsed < 1) {
-        return Response.json({ error: "數量須為正整數" }, { status: 400 });
+        return Response.json({ error: BAD_QUANTITY }, { status: 400 });
       }
       quantity = parsed;
     }
@@ -122,10 +135,11 @@ async function prepareAlacarte(
 }
 
 function explicitAmount(value: unknown): number | undefined | Response {
-  if (value === undefined || value === null || value === "") return undefined;
-  const amount = asInt(value);
-  if (amount === undefined || amount < 0) {
-    return Response.json({ error: "已收須為非負整數" }, { status: 400 });
+  if (value === undefined || value === null) return undefined;
+  if (isBlank(value)) return Response.json({ error: EMPTY_PAID }, { status: 400 });
+  const amount = nonNegativeInteger(value);
+  if (amount === undefined) {
+    return Response.json({ error: BAD_PAID }, { status: 400 });
   }
   return amount;
 }
@@ -141,12 +155,16 @@ async function resolvePrice(
     if (!rows[0]) return Response.json({ error: "找不到年菜價格" }, { status: 400 });
     fromSet = Number(rows[0].price);
   }
-  if (bodyPrice === undefined || bodyPrice === null || bodyPrice === "") {
+  if (bodyPrice === undefined || bodyPrice === null) {
     return fromSet ?? 0;
   }
-  const price = asInt(bodyPrice);
-  if (price === undefined || price < 0) {
-    return Response.json({ error: "售價須為非負整數" }, { status: 400 });
+  if (isBlank(bodyPrice)) {
+    if (menuSetId) return Response.json({ error: EMPTY_SET_PRICE }, { status: 400 });
+    return 0;
+  }
+  const price = nonNegativeInteger(bodyPrice);
+  if (price === undefined) {
+    return Response.json({ error: BAD_SET_PRICE }, { status: 400 });
   }
   return price;
 }
@@ -196,10 +214,11 @@ async function createAddon(admin: User, body: Body): Promise<Response> {
     dishId = parsed;
   }
   let requestedPrice: number | undefined;
-  if (body.price !== undefined && body.price !== null && body.price !== "") {
-    const parsed = asInt(body.price);
-    if (parsed === undefined || parsed < 0) {
-      return Response.json({ error: "售價須為非負整數" }, { status: 400 });
+  if (body.price !== undefined && body.price !== null) {
+    if (isBlank(body.price)) return Response.json({ error: EMPTY_ALACARTE_PRICE }, { status: 400 });
+    const parsed = nonNegativeInteger(body.price);
+    if (parsed === undefined) {
+      return Response.json({ error: BAD_ALACARTE_PRICE }, { status: 400 });
     }
     requestedPrice = parsed;
   }

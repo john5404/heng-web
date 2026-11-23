@@ -1,9 +1,11 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState, type CSSProperties } from "react";
-import { PhoneFormatDialog } from "@/components/PhoneFormatDialog";
+import { ConfirmDialog, PhoneFormatDialog } from "@/components/PhoneFormatDialog";
 import { addonLineText, orderAlacarteDishes, registerSetChoices } from "@/lib/alacarte";
+import { confirmAddonDelete, confirmLineRemove, confirmOrderDelete } from "@/lib/confirm-text";
 import { isPaidInFull, orderTotal, remainingAmount } from "@/lib/money";
+import { BAD_PAID, BAD_QUANTITY, BAD_SET_PRICE, EMPTY_PAID, EMPTY_QUANTITY, EMPTY_SET_PRICE, nonNegativeInteger } from "@/lib/numbers";
 import { defaultAmountPaid } from "@/lib/orders";
 import { phonePopupOn } from "@/lib/phone";
 
@@ -19,7 +21,9 @@ type AddonItem = {
   picked_up: boolean;
 };
 
-type AddedLine = { dishId: string; quantity: number };
+type AddedLine = { dishId: string; quantity: string };
+
+type PendingConfirm = { message: string; run: () => void };
 
 type OrderItem = {
   id: string;
@@ -80,6 +84,8 @@ export default function OrderDesk() {
     note: "",
   });
   const [phoneDialog, setPhoneDialog] = useState<string | null>(null);
+  const [numberDialog, setNumberDialog] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -191,7 +197,34 @@ export default function OrderDesk() {
       setError("請至少加入一道單點");
       return;
     }
-    const price = form.price.trim() === "" ? undefined : Number(form.price);
+    const priceText = form.price.trim();
+    let price: number | undefined;
+    if (priceText === "") {
+      if (form.menu_set_id) {
+        setNumberDialog(EMPTY_SET_PRICE);
+        return;
+      }
+    } else {
+      const parsed = nonNegativeInteger(priceText);
+      if (parsed === undefined) {
+        setNumberDialog(BAD_SET_PRICE);
+        return;
+      }
+      price = parsed;
+    }
+    const quantities: number[] = [];
+    for (const line of lines) {
+      if (line.quantity.trim() === "") {
+        setNumberDialog(EMPTY_QUANTITY);
+        return;
+      }
+      const quantity = nonNegativeInteger(line.quantity);
+      if (quantity === undefined || quantity < 1) {
+        setNumberDialog(BAD_QUANTITY);
+        return;
+      }
+      quantities.push(quantity);
+    }
     const ok = await mutate("/api/orders", "POST", {
       customer_name: form.customer_name,
       phone: form.phone,
@@ -201,7 +234,7 @@ export default function OrderDesk() {
       note: form.note,
       ...(price === undefined ? {} : { price }),
       ...(lines.length > 0
-        ? { alacarte: lines.map((line) => ({ dish_id: line.dishId, quantity: line.quantity })) }
+        ? { alacarte: lines.map((line, index) => ({ dish_id: line.dishId, quantity: quantities[index] })) }
         : {}),
     });
     if (!ok) return;
@@ -228,7 +261,8 @@ export default function OrderDesk() {
     setPortion,
     lines.flatMap((line) => {
       const dish = dishChoices.find((item) => item.id === line.dishId);
-      return dish ? [{ price: dish.unitPrice, quantity: line.quantity }] : [];
+      const quantity = nonNegativeInteger(line.quantity);
+      return dish && quantity ? [{ price: dish.unitPrice, quantity }] : [];
     }),
   );
   const draftPaid = defaultAmountPaid(draftTotal);
@@ -239,29 +273,25 @@ export default function OrderDesk() {
     setLines((prev) => {
       const existing = prev.find((line) => line.dishId === pickedDishId);
       if (existing) {
+        const current = nonNegativeInteger(existing.quantity) ?? 0;
         return prev.map((line) =>
-          line.dishId === pickedDishId ? { ...line, quantity: line.quantity + 1 } : line,
+          line.dishId === pickedDishId ? { ...line, quantity: String(current + 1) } : line,
         );
       }
-      return [...prev, { dishId: pickedDishId, quantity: 1 }];
+      return [...prev, { dishId: pickedDishId, quantity: "1" }];
     });
   }
 
-  function setLineQty(dishId: string, raw: number) {
-    const quantity = Number.isFinite(raw) ? Math.max(0, Math.trunc(raw)) : 0;
-    setLines((prev) => {
-      if (quantity < 1) return prev.filter((line) => line.dishId !== dishId);
-      return prev.map((line) => (line.dishId === dishId ? { ...line, quantity } : line));
-    });
+  function setLineQty(dishId: string, quantity: string) {
+    setLines((prev) => prev.map((line) => (line.dishId === dishId ? { ...line, quantity } : line)));
   }
 
-  function changeAddonQty(addonId: string, raw: number) {
-    const quantity = Number.isFinite(raw) ? Math.max(0, Math.trunc(raw)) : 0;
-    const saving =
-      quantity < 1
-        ? mutate(`/api/orders/${addonId}`, "DELETE")
-        : mutate(`/api/orders/${addonId}`, "PATCH", { quantity });
-    void saving.then((ok) => {
+  function askConfirm(message: string, run: () => void) {
+    setConfirm({ message, run });
+  }
+
+  function changeAddonQty(addonId: string, quantity: number) {
+    void mutate(`/api/orders/${addonId}`, "PATCH", { quantity }).then((ok) => {
       if (ok) void search(query);
     });
   }
@@ -428,25 +458,31 @@ export default function OrderDesk() {
                     type="button"
                     style={styles.button}
                     aria-label={`${dish.name} 減少`}
-                    onClick={() => setLineQty(line.dishId, line.quantity - 1)}
+                    onClick={() => {
+                      const current = nonNegativeInteger(line.quantity) ?? 1;
+                      if (current <= 1) {
+                        askConfirm(confirmLineRemove(dish.name), () =>
+                          setLines((prev) => prev.filter((item) => item.dishId !== line.dishId)),
+                        );
+                        return;
+                      }
+                      setLineQty(line.dishId, String(current - 1));
+                    }}
                   >
                     −
                   </button>
                   <input
                     aria-label={`${dish.name} 數量`}
                     inputMode="numeric"
-                    value={String(line.quantity)}
-                    onChange={(e) => {
-                      const raw = e.target.value.trim();
-                      setLineQty(line.dishId, raw === "" ? 0 : Number(raw));
-                    }}
+                    value={line.quantity}
+                    onChange={(e) => setLineQty(line.dishId, e.target.value)}
                     style={styles.qty}
                   />
                   <button
                     type="button"
                     style={styles.button}
                     aria-label={`${dish.name} 增加`}
-                    onClick={() => setLineQty(line.dishId, line.quantity + 1)}
+                    onClick={() => setLineQty(line.dishId, String((nonNegativeInteger(line.quantity) ?? 0) + 1))}
                   >
                     ＋
                   </button>
@@ -546,14 +582,37 @@ export default function OrderDesk() {
                 type="button"
                 disabled={pending}
                 style={styles.button}
-                onClick={() =>
-                  mutate(`/api/orders/${order.id}`, "PATCH", {
-                    price: Number(priceDrafts[order.id] ?? order.price),
-                    amount_paid: Number(paidDrafts[order.id] ?? order.amount_paid),
-                  }).then((ok) => {
+                onClick={() => {
+                  const priceText = (priceDrafts[order.id] ?? String(order.price)).trim();
+                  const paidText = (paidDrafts[order.id] ?? String(order.amount_paid)).trim();
+                  let price: number;
+                  if (priceText === "") {
+                    if (order.menu_set_id) {
+                      setNumberDialog(EMPTY_SET_PRICE);
+                      return;
+                    }
+                    price = 0;
+                  } else {
+                    const parsed = nonNegativeInteger(priceText);
+                    if (parsed === undefined) {
+                      setNumberDialog(BAD_SET_PRICE);
+                      return;
+                    }
+                    price = parsed;
+                  }
+                  if (paidText === "") {
+                    setNumberDialog(EMPTY_PAID);
+                    return;
+                  }
+                  const paid = nonNegativeInteger(paidText);
+                  if (paid === undefined) {
+                    setNumberDialog(BAD_PAID);
+                    return;
+                  }
+                  void mutate(`/api/orders/${order.id}`, "PATCH", { price, amount_paid: paid }).then((ok) => {
                     if (ok) void search(query);
-                  })
-                }
+                  });
+                }}
               >
                 儲存已收
               </button>
@@ -578,9 +637,14 @@ export default function OrderDesk() {
                 disabled={pending}
                 style={styles.danger}
                 onClick={() =>
-                  mutate(`/api/orders/${order.id}`, "DELETE").then((ok) => {
-                    if (ok) void search(query);
-                  })
+                  askConfirm(
+                    confirmOrderDelete(order.customer_name, `${order.service_date} ${order.slot_label}`),
+                    () => {
+                      void mutate(`/api/orders/${order.id}`, "DELETE").then((ok) => {
+                        if (ok) void search(query);
+                      });
+                    },
+                  )
                 }
               >
                 刪除
@@ -598,7 +662,17 @@ export default function OrderDesk() {
                       type="button"
                       style={styles.button}
                       aria-label={`${addon.dish_name} 減少`}
-                      onClick={() => changeAddonQty(addon.id, addon.quantity - 1)}
+                      onClick={() => {
+                        if (addon.quantity <= 1) {
+                          askConfirm(confirmAddonDelete(addon.dish_name, order.customer_name), () => {
+                            void mutate(`/api/orders/${addon.id}`, "DELETE").then((ok) => {
+                              if (ok) void search(query);
+                            });
+                          });
+                          return;
+                        }
+                        changeAddonQty(addon.id, addon.quantity - 1);
+                      }}
                     >
                       −
                     </button>
@@ -609,8 +683,25 @@ export default function OrderDesk() {
                       defaultValue={String(addon.quantity)}
                       onBlur={(e) => {
                         const raw = e.target.value.trim();
-                        if (raw === "" || !/^\d+$/.test(raw)) return;
-                        const quantity = Number(raw);
+                        if (raw === "") {
+                          e.target.value = String(addon.quantity);
+                          setNumberDialog(EMPTY_QUANTITY);
+                          return;
+                        }
+                        const quantity = nonNegativeInteger(raw);
+                        if (quantity === undefined || quantity < 1) {
+                          e.target.value = String(addon.quantity);
+                          if (quantity === 0) {
+                            askConfirm(confirmLineRemove(addon.dish_name), () => {
+                              void mutate(`/api/orders/${addon.id}`, "DELETE").then((ok) => {
+                                if (ok) void search(query);
+                              });
+                            });
+                            return;
+                          }
+                          setNumberDialog(BAD_QUANTITY);
+                          return;
+                        }
                         if (quantity !== addon.quantity) changeAddonQty(addon.id, quantity);
                       }}
                       style={styles.qty}
@@ -648,11 +739,13 @@ export default function OrderDesk() {
                     type="button"
                     disabled={pending}
                     style={styles.danger}
-                    onClick={() =>
-                      mutate(`/api/orders/${addon.id}`, "DELETE").then((ok) => {
-                        if (ok) void search(query);
-                      })
-                    }
+                      onClick={() =>
+                        askConfirm(confirmAddonDelete(addon.dish_name, order.customer_name), () => {
+                          void mutate(`/api/orders/${addon.id}`, "DELETE").then((ok) => {
+                            if (ok) void search(query);
+                          });
+                        })
+                      }
                   >
                     刪除加購
                   </button>
@@ -679,6 +772,18 @@ export default function OrderDesk() {
         </article>
       ))}
       {phoneDialog ? <PhoneFormatDialog message={phoneDialog} onDismiss={dismissPhonePopup} /> : null}
+      {numberDialog ? <PhoneFormatDialog message={numberDialog} onDismiss={() => setNumberDialog(null)} /> : null}
+      {confirm ? (
+        <ConfirmDialog
+          message={confirm.message}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const run = confirm.run;
+            setConfirm(null);
+            run();
+          }}
+        />
+      ) : null}
     </main>
   );
 }
