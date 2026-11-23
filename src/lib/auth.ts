@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { sql } from "./db";
 
 export const SESSION_COOKIE = "hancheng_session";
@@ -19,15 +19,6 @@ type UserRow = {
   disabled: boolean;
   password_hash?: string;
 };
-
-function sessionSecret(): string {
-  const secret = process.env.SESSION_SECRET?.trim();
-  if (secret) return secret;
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("SESSION_SECRET is required");
-  }
-  return "dev-insecure-session-secret";
-}
 
 /** Passwords: salted SHA-512 (Node crypto). Stored as sha512:<saltHex>:<digestHex>. Never plaintext. */
 export async function hashPassword(password: string): Promise<string> {
@@ -65,22 +56,31 @@ export async function ensureBootstrapAdmin(): Promise<void> {
   );
 }
 
-export function createSession(user: Pick<User, "id">): string {
-  const sig = createHmac("sha256", sessionSecret()).update(user.id).digest("base64url");
-  return `${user.id}.${sig}`;
+const SESSION_SECONDS = 12 * 60 * 60;
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
-function verifySessionToken(token: string): string | null {
-  const dot = token.lastIndexOf(".");
-  if (dot <= 0) return null;
-  const userId = token.slice(0, dot);
-  const sig = token.slice(dot + 1);
-  const expected = createHmac("sha256", sessionSecret()).update(userId).digest("base64url");
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return null;
-  if (!timingSafeEqual(a, b)) return null;
-  return userId;
+/** Stores only the token hash. The cookie value is the random token. */
+export async function createSession(user: Pick<User, "id">): Promise<string> {
+  const token = randomBytes(32).toString("base64url");
+  await sql(
+    `insert into sessions (user_id, token_hash, expires_at)
+     values ($1, $2, now() + interval '12 hours')`,
+    [user.id, hashToken(token)],
+  );
+  return token;
+}
+
+export async function deleteUserSessions(userId: string): Promise<void> {
+  await sql("delete from sessions where user_id = $1", [userId]);
+}
+
+export async function revokeSessionCookie(request: Request): Promise<void> {
+  const token = cookieValue(request.headers.get("cookie"), SESSION_COOKIE);
+  if (!token) return;
+  await sql("delete from sessions where token_hash = $1", [hashToken(token)]);
 }
 
 function sessionCookieFlags(extra: string[] = []): string[] {
@@ -90,7 +90,7 @@ function sessionCookieFlags(extra: string[] = []): string[] {
 }
 
 export function sessionSetCookie(token: string): string {
-  return [`${SESSION_COOKIE}=${token}`, ...sessionCookieFlags()].join("; ");
+  return [`${SESSION_COOKIE}=${token}`, ...sessionCookieFlags([`Max-Age=${SESSION_SECONDS}`])].join("; ");
 }
 
 export function sessionClearCookie(): string {
@@ -129,11 +129,12 @@ export async function requireUser(request: Request): Promise<User | Response> {
   await ensureBootstrapAdmin();
   const token = cookieValue(request.headers.get("cookie"), SESSION_COOKIE);
   if (!token) return unauthorized();
-  const userId = verifySessionToken(token);
-  if (!userId) return unauthorized();
   const rows = await sql<UserRow>(
-    "select id, username, role, disabled from users where id = $1",
-    [userId],
+    `select u.id, u.username, u.role, u.disabled
+     from sessions s
+     join users u on u.id = s.user_id
+     where s.token_hash = $1 and s.expires_at > now()`,
+    [hashToken(token)],
   );
   const row = rows[0];
   if (!row || row.disabled) return unauthorized();

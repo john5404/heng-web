@@ -34,7 +34,7 @@ async function ensureUser(username: string, role: "admin" | "pickup" | "viewer")
     ]);
   }
   const rows = await sql<{ id: string }>("select id from users where username = $1", [username]);
-  return `${SESSION_COOKIE}=${createSession({ id: rows[0].id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id: rows[0].id })}`;
 }
 
 function request(method: string, cookie: string, url: string, body?: unknown): Request {

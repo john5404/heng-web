@@ -124,9 +124,9 @@ describe("login lockout", () => {
     }
     expect((await login(attempt("lock_staff", "staff-pass-1", ip))).status).toBe(429);
 
-    const cookie = `${SESSION_COOKIE}=${createSession({ id: adminId })}`;
+    const cookie = `${SESSION_COOKIE}=${await createSession({ id: adminId })}`;
     const viewerId = await ensureUser("lock_viewer", "viewer", "viewer-pass-1");
-    const viewerCookie = `${SESSION_COOKIE}=${createSession({ id: viewerId })}`;
+    const viewerCookie = `${SESSION_COOKIE}=${await createSession({ id: viewerId })}`;
     const denied = await patchUser(
       new Request("http://localhost/api/settings/users", {
         method: "PATCH",

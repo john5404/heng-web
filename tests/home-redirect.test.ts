@@ -27,7 +27,7 @@ describe("home destination", () => {
     expect(await homeDestination(request(`${SESSION_COOKIE}=not-a-session`))).toBe("/login");
 
     const id = await ensureAdminUser();
-    const cookie = `${SESSION_COOKIE}=${createSession({ id })}`;
+    const cookie = `${SESSION_COOKIE}=${await createSession({ id })}`;
     expect(await homeDestination(request(cookie))).toBe("/floor");
   });
 });

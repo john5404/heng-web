@@ -38,6 +38,6 @@ export async function POST(request: Request): Promise<Response> {
     ok: true,
     user: { id: user.id, username: user.username, role: user.role },
   });
-  response.headers.set("Set-Cookie", sessionSetCookie(createSession(user)));
+  response.headers.set("Set-Cookie", sessionSetCookie(await createSession(user)));
   return response;
 }

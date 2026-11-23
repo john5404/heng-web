@@ -146,7 +146,7 @@ describe("login and sessions", () => {
     await sql("update users set disabled = true where username = $1", ["soon_disabled"]);
     const result = await requireUser(
       new Request("http://localhost/", {
-        headers: { cookie: `${SESSION_COOKIE}=${createSession({ id: rows[0].id })}` },
+        headers: { cookie: `${SESSION_COOKIE}=${await createSession({ id: rows[0].id })}` },
       }),
     );
     expect(result).toBeInstanceOf(Response);
@@ -154,7 +154,7 @@ describe("login and sessions", () => {
   });
 
   it("logout clears the session cookie", async () => {
-    const response = await logout();
+    const response = await logout(new Request("http://localhost/api/auth/logout", { method: "POST" }));
     expect(response.status).toBe(200);
     const setCookie = response.headers.get("Set-Cookie") ?? "";
     expect(setCookie).toContain(`${SESSION_COOKIE}=`);

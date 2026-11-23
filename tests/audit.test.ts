@@ -35,7 +35,7 @@ async function ensureAdminUser(): Promise<string> {
 
 async function adminCookie(): Promise<string> {
   const id = await ensureAdminUser();
-  return `${SESSION_COOKIE}=${createSession({ id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id })}`;
 }
 
 async function roleCookie(username: string, role: "viewer" | "pickup" | "admin"): Promise<string> {
@@ -49,7 +49,7 @@ async function roleCookie(username: string, role: "viewer" | "pickup" | "admin")
     ]);
   }
   const rows = await sql<{ id: string }>("select id from users where username = $1", [username]);
-  return `${SESSION_COOKIE}=${createSession({ id: rows[0].id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id: rows[0].id })}`;
 }
 
 function request(method: string, cookie: string | undefined, url: string, body?: unknown): Request {
@@ -223,7 +223,7 @@ describe("user admin", () => {
     const user = (await created.json()) as PublicUser;
     await sql("update users set disabled = true where username = $1", ["admin"]);
     try {
-      const cookie = `${SESSION_COOKIE}=${createSession({ id: user.id })}`;
+      const cookie = `${SESSION_COOKIE}=${await createSession({ id: user.id })}`;
       const denied = await patchUser(
         request("PATCH", cookie, "http://localhost/api/settings/users", {
           id: user.id,

@@ -1,5 +1,5 @@
 import { writeAudit } from "@/lib/audit";
-import { hashPassword, requireRole, requireUser, type Role, type User } from "@/lib/auth";
+import { deleteUserSessions, hashPassword, requireRole, requireUser, type Role, type User } from "@/lib/auth";
 import { sql } from "@/lib/db";
 import { clearAccountFailures } from "@/lib/login-limit";
 
@@ -188,6 +188,7 @@ export async function PATCH(request: Request): Promise<Response> {
     }
   }
   if (unlocking) await clearAccountFailures(beforeRow.username);
+  if (passwordHash || (!beforeRow.disabled && nextDisabled)) await deleteUserSessions(id);
   const afterRow = (await sql<UserRow>(`${SELECT_USER} where u.id = $1`, [id]))[0];
 
   const before = publicUser(beforeRow);

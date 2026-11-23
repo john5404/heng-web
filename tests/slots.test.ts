@@ -30,13 +30,13 @@ async function ensureAdminUser(): Promise<string> {
 
 async function adminCookie(): Promise<string> {
   const id = await ensureAdminUser();
-  return `${SESSION_COOKIE}=${createSession({ id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id })}`;
 }
 
 async function roleCookie(username: string, role: "viewer" | "pickup"): Promise<string> {
   const existing = await sql<{ id: string }>("select id from users where username = $1", [username]);
   if (existing[0]) {
-    return `${SESSION_COOKIE}=${createSession({ id: existing[0].id })}`;
+    return `${SESSION_COOKIE}=${await createSession({ id: existing[0].id })}`;
   }
   const passwordHash = await hashPassword("temp-pass");
   await sql("insert into users (username, password_hash, role) values ($1, $2, $3)", [
@@ -45,7 +45,7 @@ async function roleCookie(username: string, role: "viewer" | "pickup"): Promise<
     role,
   ]);
   const rows = await sql<{ id: string }>("select id from users where username = $1", [username]);
-  return `${SESSION_COOKIE}=${createSession({ id: rows[0].id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id: rows[0].id })}`;
 }
 
 function request(method: string, cookie: string, body?: unknown): Request {

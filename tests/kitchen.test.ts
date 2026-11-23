@@ -28,7 +28,7 @@ async function ensureAdminUser(): Promise<string> {
 
 async function adminCookie(): Promise<string> {
   const id = await ensureAdminUser();
-  return `${SESSION_COOKIE}=${createSession({ id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id })}`;
 }
 
 async function roleCookie(username: string, role: "viewer" | "pickup"): Promise<string> {
@@ -42,7 +42,7 @@ async function roleCookie(username: string, role: "viewer" | "pickup"): Promise<
     ]);
   }
   const rows = await sql<{ id: string }>("select id from users where username = $1", [username]);
-  return `${SESSION_COOKIE}=${createSession({ id: rows[0].id })}`;
+  return `${SESSION_COOKIE}=${await createSession({ id: rows[0].id })}`;
 }
 
 function request(method: string, cookie: string | undefined, url: string, body?: unknown): Request {
