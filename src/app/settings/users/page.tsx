@@ -9,6 +9,7 @@ type Account = {
   username: string;
   role: Role;
   disabled: boolean;
+  locked: boolean;
   created_at: string;
 };
 
@@ -133,6 +134,7 @@ export default function UsersPage() {
             <h2 style={styles.h2}>
               {user.username}
               {user.disabled ? "（已停用）" : ""}
+              {user.locked ? "（已鎖定）" : ""}
             </h2>
             <div style={styles.row}>
               <label style={styles.label}>
@@ -159,6 +161,16 @@ export default function UsersPage() {
               >
                 {user.disabled ? "啟用" : "停用"}
               </button>
+              {user.locked ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  style={styles.button}
+                  onClick={() => mutate("PATCH", { id: user.id, unlock: true })}
+                >
+                  解除鎖定
+                </button>
+              ) : null}
             </div>
             <form
               style={styles.row}

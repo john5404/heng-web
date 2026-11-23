@@ -19,7 +19,8 @@ export default function LoginPage() {
         body: JSON.stringify({ username, password }),
       });
       if (!response.ok) {
-        setError("帳號或密碼錯誤");
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        setError(data?.error || "帳號或密碼錯誤");
         return;
       }
       window.location.href = "/";

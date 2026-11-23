@@ -1,6 +1,7 @@
 import { writeAudit } from "@/lib/audit";
 import { hashPassword, requireRole, requireUser, type Role, type User } from "@/lib/auth";
 import { sql } from "@/lib/db";
+import { clearAccountFailures } from "@/lib/login-limit";
 
 type UserRow = {
   id: string;
@@ -8,6 +9,7 @@ type UserRow = {
   role: Role;
   disabled: boolean;
   created_at: Date | string;
+  locked?: boolean;
 };
 
 type Body = {
@@ -16,6 +18,7 @@ type Body = {
   password?: unknown;
   role?: unknown;
   disabled?: unknown;
+  unlock?: unknown;
 };
 
 const ROLES: Role[] = ["admin", "pickup", "viewer"];
@@ -60,16 +63,20 @@ function publicUser(row: UserRow) {
     username: row.username,
     role: row.role,
     disabled: Boolean(row.disabled),
+    locked: Boolean(row.locked),
     created_at: asIso(row.created_at),
   };
 }
 
-const SELECT_USER = "select id, username, role, disabled, created_at from users";
+const SELECT_USER = `select u.id, u.username, u.role, u.disabled, u.created_at,
+       coalesce(l.locked_until > now(), false) as locked
+     from users u
+     left join login_account_limits l on l.username = u.username`;
 
 export async function GET(request: Request): Promise<Response> {
   const admin = await requireAdmin(request);
   if (isResponse(admin)) return admin;
-  const rows = await sql<UserRow>(`${SELECT_USER} order by username`);
+  const rows = await sql<UserRow>(`${SELECT_USER} order by u.username`);
   return Response.json({ users: rows.map(publicUser) });
 }
 
@@ -138,7 +145,7 @@ export async function PATCH(request: Request): Promise<Response> {
 
   const id = asString(body.id);
   if (!id) return Response.json({ error: "缺少帳號" }, { status: 400 });
-  const beforeRow = (await sql<UserRow>(`${SELECT_USER} where id = $1`, [id]))[0];
+  const beforeRow = (await sql<UserRow>(`${SELECT_USER} where u.id = $1`, [id]))[0];
   if (!beforeRow) return Response.json({ error: "找不到帳號" }, { status: 404 });
 
   const nextRole = body.role === undefined ? beforeRow.role : asRole(body.role);
@@ -161,30 +168,27 @@ export async function PATCH(request: Request): Promise<Response> {
     passwordHash = await hashPassword(password);
   }
 
-  if (body.role === undefined && body.disabled === undefined && passwordHash === undefined) {
+  const unlocking = body.unlock === true;
+  if (body.role === undefined && body.disabled === undefined && passwordHash === undefined && !unlocking) {
     return Response.json({ error: "沒有要更新的內容" }, { status: 400 });
   }
 
   const guard = await keepsAnAdmin(beforeRow, nextRole, nextDisabled);
   if (guard instanceof Response) return guard;
 
-  const afterRow = passwordHash
-    ? (
-        await sql<UserRow>(
-          `update users set role = $1, disabled = $2, password_hash = $3
-           where id = $4
-           returning id, username, role, disabled, created_at`,
-          [nextRole, nextDisabled, passwordHash, id],
-        )
-      )[0]
-    : (
-        await sql<UserRow>(
-          `update users set role = $1, disabled = $2
-           where id = $3
-           returning id, username, role, disabled, created_at`,
-          [nextRole, nextDisabled, id],
-        )
-      )[0];
+  const changingAccount = body.role !== undefined || body.disabled !== undefined || passwordHash !== undefined;
+  if (changingAccount) {
+    if (passwordHash) {
+      await sql(
+        `update users set role = $1, disabled = $2, password_hash = $3 where id = $4`,
+        [nextRole, nextDisabled, passwordHash, id],
+      );
+    } else {
+      await sql(`update users set role = $1, disabled = $2 where id = $3`, [nextRole, nextDisabled, id]);
+    }
+  }
+  if (unlocking) await clearAccountFailures(beforeRow.username);
+  const afterRow = (await sql<UserRow>(`${SELECT_USER} where u.id = $1`, [id]))[0];
 
   const before = publicUser(beforeRow);
   const after = publicUser(afterRow);
